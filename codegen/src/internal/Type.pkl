@@ -1,0 +1,37 @@
+@Unlisted
+abstract module pkl.zig.internal.Type
+
+import "Type.pkl"
+
+abstract function render(currentPackage: String): String
+
+class Optional extends Type {
+  elem: Type
+  function render(currentPackage: String) = "?\(elem.render(currentPackage))"
+}
+
+class Slice extends Type {
+  elem: Type
+  function render(currentPackage: String) = "[]\(elem.render(currentPackage))"
+}
+
+class Map extends Type {
+  key: Type
+  elem: Type
+  function render(currentPackage: String) =
+    if (key.render(currentPackage) == "[]const u8")
+      "std.StringHashMap(\(elem.render(currentPackage)))"
+    else
+      "std.AutoHashMap(\(key.render(currentPackage)), \(elem.render(currentPackage)))"
+}
+
+class Declared extends Type {
+  packageName: String?
+  typeName: String
+
+  function render(currentPackage: String) =
+    if (packageName != null && packageName != currentPackage)
+      "\(packageName).\(typeName)"
+    else
+      typeName
+}

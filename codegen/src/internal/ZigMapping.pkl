@@ -1,0 +1,52 @@
+@Unlisted
+abstract module pkl.zig.internal.ZigMapping
+
+import "pkl:reflect"
+
+import "Type.pkl"
+import "ZigMapping.pkl"
+import "utils.pkl"
+
+packageName: String
+
+name: String
+
+names: List<String>
+
+source: reflect.TypeDeclaration
+
+seenMappings: List<ZigMapping>
+
+type: Type
+
+class Enum extends ZigMapping {
+  local self = this
+  alias: reflect.TypeAlias = self.source as reflect.TypeAlias
+  local union: reflect.UnionType = alias.referent as reflect.UnionType
+
+  name = utils.toZigName(alias)
+  names = List(name)
+  type = new Type.Declared { packageName = self.packageName; typeName = name }
+
+  members: List<EnumMember> =
+    union.members
+      .filter((it) -> !(it is reflect.NothingType))
+      .map((it) -> new EnumMember {
+        pklName = (it as reflect.StringLiteralType).value
+        zigName = utils.normalizeEnumName(pklName)
+      })
+}
+
+class Class extends ZigMapping {
+  local self = this
+  clazz: reflect.Class = self.source as reflect.Class
+
+  name = utils.toZigName(clazz)
+  names = List(name)
+  type = new Type.Declared { packageName = self.packageName; typeName = name }
+}
+
+class EnumMember {
+  pklName: String
+  zigName: String
+}

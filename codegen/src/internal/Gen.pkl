@@ -1,0 +1,10 @@
+@Unlisted
+abstract module pkl.zig.internal.Gen
+
+import "ZigMapping.pkl"
+
+mapping: ZigMapping
+
+mappings: List<ZigMapping>
+
+contents: String

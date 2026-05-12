@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "message", .module = message_mod },
             .{ .name = "transport", .module = transport_mod },
+            .{ .name = "msgpack", .module = msgpack_mod },
         },
     });
 
@@ -72,6 +73,39 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run example");
     const run_cmd = b.addRunArtifact(example_exe);
     run_step.dependOn(&run_cmd.step);
+
+    const codegen_cmd = b.addSystemCommand(&.{ "pkl", "run", "codegen/src/gen.pkl", "--output-path" });
+    codegen_cmd.stdio = .inherit;
+    const codegen_dir = codegen_cmd.addOutputDirectoryArg("codegen-example");
+    codegen_cmd.addFileArg(b.path("example/codegen/AppConfig.pkl"));
+
+    const appconfig_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = codegen_dir.path(b, "appconfig/index.zig"),
+        .imports = &.{
+            .{ .name = "pkl", .module = pkl_mod },
+        },
+    });
+
+    const codegen_example_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("example/codegen_example.zig"),
+        .imports = &.{
+            .{ .name = "pkl", .module = pkl_mod },
+            .{ .name = "appconfig", .module = appconfig_mod },
+        },
+    });
+    const codegen_example_exe = b.addExecutable(.{
+        .name = "codegen-example",
+        .root_module = codegen_example_mod,
+    });
+    //codegen_example_exe.step.dependOn(&codegen_cmd.step);
+
+    const run_codegen_example_step = b.step("run-codegen-example", "Generate and run typed config example");
+    const run_codegen_example_cmd = b.addRunArtifact(codegen_example_exe);
+    run_codegen_example_step.dependOn(&run_codegen_example_cmd.step);
 
     const integration_step = b.step("integration-test", "Run tests that spawn pkl server");
     const integration_options = b.addOptions();

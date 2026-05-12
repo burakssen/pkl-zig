@@ -1,0 +1,28 @@
+@zig.Package { name = "appconfig" }
+module example.codegen.AppConfig
+
+import "../../codegen/src/zig.pkl"
+
+host: String = "127.0.0.2"
+
+port: UInt16 = 8080
+
+database_url: String = "postgres://app:secret@localhost:5432/app"
+
+typed_config_enabled: Boolean = true
+
+startup_load_enabled: Boolean = true
+
+request_timeout: Duration = 5.s
+
+debug: Boolean = true
+
+class Person {
+  name: String
+  age: UInt8
+}
+
+person: Person = new Person {
+  name = "John"
+  age = 30
+}

@@ -1,0 +1,79 @@
+@Unlisted
+module pkl.zig.internal.ClassGen
+
+extends "Gen.pkl"
+
+import "pkl:reflect"
+
+import "ZigMapping.pkl"
+import "Type.pkl"
+import "typegen.pkl"
+import "utils.pkl"
+
+clazz: reflect.Class = mapping.source as reflect.Class
+
+classInfo: ZigMapping.Class = mapping as ZigMapping.Class
+
+local fields: Map<String, ZigStructField> =
+  clazz.properties
+    .filter((_, prop: reflect.Property) -> !prop.allModifiers.contains("hidden"))
+    .mapValues((_, prop: reflect.Property) -> new ZigStructField {
+      name = utils.toZigFieldName(prop)
+      pklName = prop.name
+      type = typegen.generateType(prop.type, clazz, module.mappings)
+      docComment = prop.docComment
+    })
+
+contents =
+  new Listing {
+    utils.renderHeaderComment(clazz.enclosingDeclaration)
+    "const std = @import(\"std\");"
+    "const pkl = @import(\"pkl\");"
+    for (dep in module.mappings.filter((it) -> it.packageName == classInfo.packageName && it.name != classInfo.name)) {
+      "const \(dep.name) = @import(\"\(dep.name).pkl.zig\").\(dep.name);"
+    }
+    ""
+    when (clazz.docComment != null) {
+      utils.renderDocComment(clazz.docComment!!, "")
+    }
+    "pub const \(classInfo.name) = struct {"
+    for (_, field in fields) {
+      when (field.docComment != null) {
+        utils.renderDocComment(field.docComment!!, "    ")
+      }
+      "    \(field.name): \(field.type.render(classInfo.packageName)),"
+    }
+    ""
+    "    pub fn pklFieldName(comptime field_name: []const u8) []const u8 {"
+    "        return inline for (field_names) |entry| {"
+    "            if (std.mem.eql(u8, field_name, entry.zig)) break entry.pkl;"
+    "        } else field_name;"
+    "    }"
+    ""
+    "    const field_names = [_]struct { zig: []const u8, pkl: []const u8 }{"
+    for (_, field in fields) {
+      "        .{ .zig = \(utils.toZigString(field.name)), .pkl = \(utils.toZigString(field.pklName)) },"
+    }
+    "    };"
+    when (clazz.enclosingDeclaration.moduleClass == clazz) {
+      ""
+      "    pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !\(classInfo.name) {"
+      "        var evaluator = try pkl.Evaluator.init(io, allocator, .{});"
+      "        defer evaluator.deinit();"
+      "        return evaluator.loadFromPath(\(classInfo.name), path);"
+      "    }"
+      ""
+      "    pub fn load(evaluator: *pkl.Evaluator, module_uri: []const u8) !\(classInfo.name) {"
+      "        return evaluator.load(\(classInfo.name), module_uri);"
+      "    }"
+    }
+    "};"
+    ""
+  }.join("\n")
+
+class ZigStructField {
+  name: String
+  pklName: String
+  type: Type
+  docComment: String?
+}

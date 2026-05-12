@@ -1,0 +1,84 @@
+/// Generates Zig sources from Pkl.
+@ModuleInfo { minPklVersion = "0.31.0" }
+module pkl.zig.Generator
+
+import "pkl:reflect"
+
+import "GeneratorSettings.pkl"
+import "internal/gatherer.pkl"
+import "internal/Package.pkl"
+import "internal/utils.pkl"
+import "internal/ZigMapping.pkl"
+
+codegenSettings: GeneratorSettings
+
+moduleToGenerate: Module
+
+function getPackageName(mod: reflect.Module) =
+  codegenSettings.packageMappings.getOrNull(mod.moduleClass.reflectee.toString())
+    ?? (mod.annotations.findOrNull((it) -> it.getClass().toString() == "pkl.zig#Package"))?.name
+    ?? throw(
+      """
+      No Zig package defined for module `\(mod.moduleClass.reflectee)` (\(mod.location.displayUri)).
+
+      Define one with `@zig.Package`, `--mapping`, or `packageMappings`.
+      """
+    )
+
+typealias EnumMember = reflect.StringLiteralType | reflect.NothingType
+
+function isEnumLike(decl: reflect.TypeDeclaration) =
+  decl is reflect.TypeAlias
+    && let (referent = decl.referent)
+      referent is reflect.UnionType
+        && referent.members.every((t) -> t is EnumMember)
+        && referent.members
+          .filter((t) -> t is reflect.StringLiteralType)
+          .every((it: reflect.StringLiteralType) -> utils.canBeNormalizedToEnumName(it.value))
+
+function gatherEnums(decl: List<reflect.TypeDeclaration>): List<ZigMapping> =
+  decl
+    .filter((it) -> isEnumLike(it))
+    .fold(List(), (acc, it) ->
+      acc.add(new ZigMapping.Enum {
+        packageName = getPackageName(it.enclosingDeclaration)
+        source = it
+        seenMappings = acc
+      })
+    )
+
+function gatherClasses(decl: List<reflect.TypeDeclaration>): Mixin<List<ZigMapping>> = (acc) ->
+  decl
+    .filter((it) -> it is reflect.Class)
+    .fold(acc, (accum, it) ->
+      accum.add(new ZigMapping.Class {
+        packageName = getPackageName(it.enclosingDeclaration)
+        source = it
+        seenMappings = accum
+      })
+    )
+
+local allMappings: List<ZigMapping> =
+  let (clazz = reflect.Module(moduleToGenerate).moduleClass)
+  let (declarations = gatherer.gatherTypeDeclarations(clazz, List()))
+    gatherEnums(declarations) |> gatherClasses(declarations)
+
+local packages =
+  allMappings
+    .groupBy((it) -> it.packageName)
+    .mapValues((_packageName, _mappings: List<ZigMapping>) -> new Package {
+      packageName = _packageName
+      `module` = _mappings.first.source.enclosingDeclaration
+      mappings = allMappings
+    })
+
+output {
+  files {
+    for (_, package in packages) {
+      for (filename, fileOutput in package.output.files!!) {
+        ["\(package.packageName)/\(filename)"] = fileOutput
+      }
+    }
+  }
+  text = throw("Generator.pkl only produces multiple-file output. Run with -m.")
+}

@@ -1,0 +1,21 @@
+module pkl.zig
+
+local const isIdentifier = (it: String) -> it.matches(Regex(#"[A-Za-z_][A-Za-z0-9_]*"#))
+
+typealias ZigName = String(isIdentifier)
+
+/// Metadata for the corresponding Zig package or output directory.
+class Package extends Annotation {
+  name: String
+}
+
+/// The name for the annotated member when generated to Zig.
+class Name extends Annotation {
+  value: ZigName
+}
+
+/// Metadata for generated Zig fields.
+open class Field extends Annotation {
+  /// Override the generated Zig field name.
+  name: ZigName?
+}

@@ -1,0 +1,13 @@
+/// Settings to configure Zig code generation for Pkl files.
+module pkl.zig.GeneratorSettings
+
+import "zig.pkl"
+
+/// Mapping of Pkl module names to generated Zig package/output names.
+packageMappings: Mapping<String, String>
+
+/// The base path used to filter and relativize generated output.
+basePath: String = ""
+
+/// Print generated file names without writing files.
+dryRun: Boolean = false

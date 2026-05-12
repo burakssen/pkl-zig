@@ -1,0 +1,12 @@
+amends "pkl:Project"
+
+package {
+  name = "pkl.zig"
+  baseUri = "package://pkg.pkl-lang.org/pkl-zig/\(name)"
+  version = "0.0.1"
+  authors {
+    "pkl-zig authors"
+  }
+  description = "Pkl bindings for the Zig programming language"
+  license = "Apache-2.0"
+}

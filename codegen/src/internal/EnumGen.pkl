@@ -1,0 +1,44 @@
+@Unlisted
+module pkl.zig.internal.EnumGen
+
+extends "Gen.pkl"
+
+import "pkl:reflect"
+
+import "ZigMapping.pkl"
+import "utils.pkl"
+
+alias: reflect.TypeAlias = mapping.source as reflect.TypeAlias
+
+enumMapping: ZigMapping.Enum = mapping as ZigMapping.Enum
+
+contents =
+  new Listing {
+    utils.renderHeaderComment(alias.enclosingDeclaration)
+    "const std = @import(\"std\");"
+    ""
+    when (alias.docComment != null) {
+      utils.renderDocComment(alias.docComment!!, "")
+    }
+    "pub const \(enumMapping.name) = enum {"
+    for (member in enumMapping.members) {
+      "    \(member.zigName),"
+    }
+    ""
+    "    pub fn parse(value: []const u8) !\(enumMapping.name) {"
+    for (member in enumMapping.members) {
+      "        if (std.mem.eql(u8, value, \(utils.toZigString(member.pklName)))) return .\(member.zigName);"
+    }
+    "        return error.InvalidEnumValue;"
+    "    }"
+    ""
+    "    pub fn pklName(self: \(enumMapping.name)) []const u8 {"
+    "        return switch (self) {"
+    for (member in enumMapping.members) {
+      "            .\(member.zigName) => \(utils.toZigString(member.pklName)),"
+    }
+    "        };"
+    "    }"
+    "};"
+    ""
+  }.join("\n")

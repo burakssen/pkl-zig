@@ -1,0 +1,71 @@
+@Unlisted
+module pkl.zig.internal.utils
+
+import "pkl:reflect"
+
+keywords: List<String> =
+  List(
+    "addrspace", "align", "allowzero", "and", "anyframe", "anytype", "asm", "async", "await",
+    "break", "callconv", "catch", "comptime", "const", "continue", "defer", "else", "enum",
+    "errdefer", "error", "export", "extern", "fn", "for", "if", "inline", "linksection",
+    "noalias", "noinline", "nosuspend", "opaque", "or", "orelse", "packed", "pub", "resume",
+    "return", "struct", "suspend", "switch", "test", "threadlocal", "try", "union", "unreachable",
+    "usingnamespace", "var", "volatile", "while"
+  )
+
+local escaper = (c: Char) ->
+  if (c == "\n")
+    #"\n"#
+  else if (c == "\"")
+    #"\""#
+  else if (c == #"\"#)
+    #"\\\\"#
+  else
+    c
+
+function toZigString(str: String): String = "\"" + str.chars.map(escaper).join("") + "\""
+
+function renderHeaderComment(`module`: reflect.Module) =
+  "// Code generated from Pkl module `\(`module`.name)`. DO NOT EDIT."
+
+function renderDocComment(docComment: String, indent: String) =
+  docComment
+    .split(Regex(#"\r?\n"#))
+    .map((it) -> if (it.trim().isBlank) "\(indent)///" else "\(indent)/// \(it)")
+    .join("\n")
+
+function toZigName(source: reflect.Declaration): String =
+  source.annotations.findOrNull((it) -> it.getClass().toString() == "pkl.zig#Name")?.value
+    ??
+    let (
+      _name =
+        if (source is reflect.Class && source.enclosingDeclaration.moduleClass == source)
+          source.enclosingDeclaration.name.split(".").last
+        else
+          source.name
+    )
+      normalizeTypeName(_name)
+
+function toZigFieldName(source: reflect.Property): String =
+  source.annotations.findOrNull((it) -> it.getClass().toString() == "pkl.zig#Field")?.name
+    ?? normalizeFieldName(source.name)
+
+function normalizePackageName(name: String): String = normalizeFieldName(name.replaceAll(".", "_"))
+
+function normalizeTypeName(name: String) =
+  let (parts = splitName(name))
+  let (pascaled = parts.map((p) -> p.capitalize()).join(""))
+    if (pascaled.isEmpty || !pascaled[0].matches(Regex(#"[A-Za-z_]"#))) "N" + pascaled else pascaled
+
+function normalizeFieldName(name: String) =
+  let (parts = splitName(name))
+  let (joined = if (parts.isEmpty) "field" else parts.join("_").toLowerCase())
+  let (identifier = if (!joined[0].matches(Regex(#"[A-Za-z_]"#))) "_" + joined else joined)
+    if (keywords.contains(identifier)) "@\"" + identifier + "\"" else identifier
+
+function canBeNormalizedToEnumName(name: String) = name == "" || !splitName(name).isEmpty
+
+function normalizeEnumName(name: String) =
+  if (name == "") "empty" else normalizeFieldName(name).replaceAll("@\"", "").replaceAll("\"", "")
+
+function splitName(name: String) = name.split(Regex(#"(?u)[^\p{L}\d_]+"#)).filter((it) -> !it.isEmpty)

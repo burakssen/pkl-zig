@@ -1,0 +1,103 @@
+@Unlisted
+module pkl.zig.internal.typegen
+
+import "pkl:reflect"
+
+import "Type.pkl"
+import "ZigMapping.pkl"
+
+local anyType: Type = new Type.Declared { typeName = "pkl.Value" }
+
+function generateType(
+  type: reflect.Type,
+  enclosing: reflect.TypeDeclaration,
+  seenMappings: List<ZigMapping>
+): Type =
+  if (type is reflect.NullableType)
+    new Type.Optional { elem = generateType(type.member, enclosing, seenMappings) }
+  else if (type is reflect.DeclaredType)
+    generateDeclaredType(type, enclosing, seenMappings)
+  else if (type is reflect.ModuleType)
+    let (moduleClass = enclosing.enclosingDeclaration.moduleClass)
+      generateType(reflect.DeclaredType(moduleClass), moduleClass, seenMappings)
+  else if (type is reflect.UnionType)
+    generateUnionType(type, seenMappings)
+  else if (type is reflect.UnknownType)
+    anyType
+  else if (type is reflect.NothingType)
+    throw("Unable to generate Zig for the `nothing` type")
+  else if (type is reflect.StringLiteralType)
+    new Type.Declared { typeName = "[]const u8" }
+  else
+    anyType
+
+function generateUnionType(type: reflect.UnionType, seenMappings: List<ZigMapping>): Type =
+  if (type.members.every((it) -> it is reflect.StringLiteralType || it == reflect.stringType))
+    new Type.Declared { typeName = "[]const u8" }
+  else
+    anyType
+
+function generateDeclaredType(
+  type: reflect.DeclaredType,
+  enclosing: reflect.TypeDeclaration,
+  seenMappings: List<ZigMapping>
+): Type =
+  let (referent = type.referent)
+  let (reflectee = referent.reflectee)
+  let (mapped = seenMappings.findOrNull((it) -> it.source == referent))
+    if (mapped != null)
+      mapped.type
+    else if (mappedTypes.containsKey(reflectee))
+      mappedTypes[reflectee]
+    else if (referent is reflect.TypeAlias)
+      generateType(referent.referent, enclosing, seenMappings)
+    else if (reflectee == List || reflectee == Listing || reflectee == Set)
+      new Type.Slice {
+        elem =
+          if (type.typeArguments.getOrNull(0) == null)
+            anyType
+          else
+            generateType(type.typeArguments[0], enclosing, seenMappings)
+      }
+    else if (reflectee == Map || reflectee == Mapping)
+      new Type.Map {
+        key =
+          if (type.typeArguments.getOrNull(0) == null)
+            anyType
+          else
+            generateType(type.typeArguments[0], enclosing, seenMappings)
+        elem =
+          if (type.typeArguments.getOrNull(1) == null)
+            anyType
+          else
+            generateType(type.typeArguments[1], enclosing, seenMappings)
+      }
+    else if (reflectee == Pair)
+      new Type.Declared { typeName = "pkl.Pair(pkl.Value, pkl.Value)" }
+    else
+      anyType
+
+mappedTypes: Mapping<Class | TypeAlias, Type> = new {
+  [Int] = new Type.Declared { typeName = "i64" }
+  [Int8] = new Type.Declared { typeName = "i8" }
+  [Int16] = new Type.Declared { typeName = "i16" }
+  [Int32] = new Type.Declared { typeName = "i32" }
+  [UInt] = new Type.Declared { typeName = "u64" }
+  [UInt8] = new Type.Declared { typeName = "u8" }
+  [UInt16] = new Type.Declared { typeName = "u16" }
+  [UInt32] = new Type.Declared { typeName = "u32" }
+  [Number] = new Type.Declared { typeName = "f64" }
+  [Float] = new Type.Declared { typeName = "f64" }
+  [String] = new Type.Declared { typeName = "[]const u8" }
+  [Boolean] = new Type.Declared { typeName = "bool" }
+  [Null] = anyType
+  [Any] = anyType
+  [Dynamic] = anyType
+  [Duration] = new Type.Declared { typeName = "pkl.Duration" }
+  [DurationUnit] = new Type.Declared { typeName = "pkl.DurationUnit" }
+  [DataSize] = new Type.Declared { typeName = "pkl.DataSize" }
+  [DataSizeUnit] = new Type.Declared { typeName = "pkl.DataSizeUnit" }
+  [Class] = new Type.Declared { typeName = "pkl.Class" }
+  [TypeAlias] = new Type.Declared { typeName = "pkl.TypeAlias" }
+  [Bytes] = new Type.Declared { typeName = "[]const u8" }
+}
