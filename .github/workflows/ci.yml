@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig fmt --check build.zig src example
+      - run: zig build test
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install Pkl
+        run: |
+          curl -L -o pkl https://github.com/apple/pkl/releases/download/0.31.1/pkl-linux-amd64
+          chmod +x pkl
+          sudo mv pkl /usr/local/bin/pkl
+      - run: zig build integration-test

@@ -1,16 +1,22 @@
 const std = @import("std");
 const msgpack = @import("msgpack");
+const build_options = @import("build_options");
 
 pub const errors = @import("errors.zig");
-pub const utils = @import("utils.zig");
+pub const Code = @import("code.zig").Code;
+pub const codec = @import("codec.zig");
+pub const incoming = @import("incoming/incoming.zig");
+pub const outgoing = @import("outgoing/outgoing.zig");
 
-const incoming = @import("incoming/incoming.zig");
-const outgoing = @import("outgoing/outgoing.zig");
+pub const Incoming = incoming.Message;
+pub const Outgoing = outgoing.Message;
 
-const Message = struct {
-    pub const Incoming = incoming.IncomingMessage;
-    pub const Outgoing = outgoing.OutgoingMessage;
-};
+fn framePayload(allocator: std.mem.Allocator, code: i64, body: msgpack.Payload) !msgpack.Payload {
+    var payload = try msgpack.Payload.arrPayload(2, allocator);
+    try payload.setArrElement(0, msgpack.Payload.intToPayload(code));
+    try payload.setArrElement(1, body);
+    return payload;
+}
 
 test "decode CreateEvaluatorResponse" {
     const allocator = std.testing.allocator;
@@ -22,7 +28,7 @@ test "decode CreateEvaluatorResponse" {
     var arr = try msgpack.Payload.arrPayload(2, allocator);
     defer arr.free(allocator);
 
-    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(incoming.code.Code.new_evaluator_response)));
+    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(Code.new_evaluator_response)));
     var map = msgpack.Payload.mapPayload(allocator);
 
     try map.mapPut("requestId", msgpack.Payload.intToPayload(100));
@@ -35,7 +41,7 @@ test "decode CreateEvaluatorResponse" {
     var payload = try packer.packer.read(allocator);
     defer payload.free(allocator);
 
-    const msg = try incoming.IncomingMessage.decode(allocator, &payload);
+    const msg = try Incoming.decode(allocator, &payload);
     switch (msg) {
         .create_evaluator_response => |resp| {
             try std.testing.expectEqual(resp.request_id, 100);
@@ -60,7 +66,7 @@ test "decode EvaluateResponse" {
     var arr = try msgpack.Payload.arrPayload(2, allocator);
     defer arr.free(allocator);
 
-    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(incoming.code.Code.evaluate_response)));
+    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(Code.evaluate_response)));
     var map = msgpack.Payload.mapPayload(allocator);
 
     try map.mapPut("requestId", msgpack.Payload.intToPayload(123));
@@ -74,7 +80,7 @@ test "decode EvaluateResponse" {
     var payload = try packer.packer.read(allocator);
     defer payload.free(allocator);
 
-    const msg = try incoming.IncomingMessage.decode(allocator, &payload);
+    const msg = try Incoming.decode(allocator, &payload);
     switch (msg) {
         .evaluate_response => |resp| {
             try std.testing.expectEqual(resp.request_id, 123);
@@ -100,7 +106,7 @@ test "decode EvaluateResponse with null result" {
     var arr = try msgpack.Payload.arrPayload(2, allocator);
     defer arr.free(allocator);
 
-    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(incoming.code.Code.evaluate_response)));
+    try arr.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(Code.evaluate_response)));
     var map = msgpack.Payload.mapPayload(allocator);
 
     try map.mapPut("requestId", msgpack.Payload.intToPayload(321));
@@ -114,7 +120,7 @@ test "decode EvaluateResponse with null result" {
     var payload = try packer.packer.read(allocator);
     defer payload.free(allocator);
 
-    const msg = try incoming.IncomingMessage.decode(allocator, &payload);
+    const msg = try Incoming.decode(allocator, &payload);
     switch (msg) {
         .evaluate_response => |resp| {
             try std.testing.expectEqual(resp.request_id, 321);
@@ -130,7 +136,109 @@ test "decode EvaluateResponse with null result" {
     }
 }
 
-test "utils FromPayload decodes required optional and bool fields" {
+test "codec decodeFrame rejects malformed and unknown frames" {
+    const allocator = std.testing.allocator;
+
+    var too_long = try msgpack.Payload.arrPayload(3, allocator);
+    defer too_long.free(allocator);
+    try std.testing.expectError(errors.DecodeError.InvalidArrayLength, codec.decodeFrame(&too_long));
+
+    const unknown_body = msgpack.Payload.mapPayload(allocator);
+    var unknown = try framePayload(allocator, 0x99, unknown_body);
+    defer unknown.free(allocator);
+    try std.testing.expectError(errors.DecodeError.UnknownMessageCode, codec.decodeFrame(&unknown));
+}
+
+test "incoming decode maps every incoming code" {
+    const allocator = std.testing.allocator;
+
+    var create_body = msgpack.Payload.mapPayload(allocator);
+    try create_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    var create_frame = try framePayload(allocator, @intFromEnum(Code.new_evaluator_response), create_body);
+    defer create_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &create_frame)) == .create_evaluator_response);
+
+    var eval_body = msgpack.Payload.mapPayload(allocator);
+    try eval_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try eval_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    var eval_frame = try framePayload(allocator, @intFromEnum(Code.evaluate_response), eval_body);
+    defer eval_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &eval_frame)) == .evaluate_response);
+
+    var log_body = msgpack.Payload.mapPayload(allocator);
+    try log_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    try log_body.mapPut("level", msgpack.Payload.intToPayload(1));
+    try log_body.mapPut("message", try msgpack.Payload.strToPayload("message", allocator));
+    try log_body.mapPut("frameUri", try msgpack.Payload.strToPayload("file:///a.pkl", allocator));
+    var log_frame = try framePayload(allocator, @intFromEnum(Code.evaluate_log), log_body);
+    defer log_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &log_frame)) == .log);
+
+    var read_body = msgpack.Payload.mapPayload(allocator);
+    try read_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try read_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    try read_body.mapPut("uri", try msgpack.Payload.strToPayload("customfs:/resource", allocator));
+    var read_frame = try framePayload(allocator, @intFromEnum(Code.evaluate_read), read_body);
+    defer read_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &read_frame)) == .read_resource);
+
+    var module_body = msgpack.Payload.mapPayload(allocator);
+    try module_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try module_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    try module_body.mapPut("uri", try msgpack.Payload.strToPayload("customfs:/module.pkl", allocator));
+    var module_frame = try framePayload(allocator, @intFromEnum(Code.evaluate_read_module), module_body);
+    defer module_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &module_frame)) == .read_module);
+
+    var list_resources_body = msgpack.Payload.mapPayload(allocator);
+    try list_resources_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try list_resources_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    try list_resources_body.mapPut("uri", try msgpack.Payload.strToPayload("customfs:/", allocator));
+    var list_resources_frame = try framePayload(allocator, @intFromEnum(Code.list_resources_request), list_resources_body);
+    defer list_resources_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &list_resources_frame)) == .list_resources);
+
+    var list_modules_body = msgpack.Payload.mapPayload(allocator);
+    try list_modules_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try list_modules_body.mapPut("evaluatorId", msgpack.Payload.intToPayload(2));
+    try list_modules_body.mapPut("uri", try msgpack.Payload.strToPayload("customfs:/", allocator));
+    var list_modules_frame = try framePayload(allocator, @intFromEnum(Code.list_modules_request), list_modules_body);
+    defer list_modules_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &list_modules_frame)) == .list_modules);
+
+    var init_module_body = msgpack.Payload.mapPayload(allocator);
+    try init_module_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try init_module_body.mapPut("scheme", try msgpack.Payload.strToPayload("customfs:", allocator));
+    var init_module_frame = try framePayload(allocator, @intFromEnum(Code.initialize_module_reader_request), init_module_body);
+    defer init_module_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &init_module_frame)) == .initialize_module_reader);
+
+    var init_resource_body = msgpack.Payload.mapPayload(allocator);
+    try init_resource_body.mapPut("requestId", msgpack.Payload.intToPayload(1));
+    try init_resource_body.mapPut("scheme", try msgpack.Payload.strToPayload("customfs:", allocator));
+    var init_resource_frame = try framePayload(allocator, @intFromEnum(Code.initialize_resource_reader_request), init_resource_body);
+    defer init_resource_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &init_resource_frame)) == .initialize_resource_reader);
+
+    const close_body = msgpack.Payload.mapPayload(allocator);
+    var close_frame = try framePayload(allocator, @intFromEnum(Code.close_external_process), close_body);
+    defer close_frame.free(allocator);
+    try std.testing.expect((try Incoming.decode(allocator, &close_frame)) == .close_external_process);
+}
+
+test "outgoing messages map to protocol codes" {
+    try std.testing.expectEqual(Code.new_evaluator, (Outgoing{ .create_evaluator = .{ .request_id = 1 } }).code());
+    try std.testing.expectEqual(Code.close_evaluator, (Outgoing{ .close_evaluator = .{ .evaluator_id = 1 } }).code());
+    try std.testing.expectEqual(Code.evaluate, (Outgoing{ .evaluate = .{ .request_id = 1, .evaluator_id = 2, .module_uri = "file:///a.pkl" } }).code());
+    try std.testing.expectEqual(Code.evaluate_read_response, (Outgoing{ .read_resource_response = .{ .request_id = 1, .evaluator_id = 2 } }).code());
+    try std.testing.expectEqual(Code.evaluate_read_module_response, (Outgoing{ .read_module_response = .{ .request_id = 1, .evaluator_id = 2 } }).code());
+    try std.testing.expectEqual(Code.list_resources_response, (Outgoing{ .list_resources_response = .{ .request_id = 1, .evaluator_id = 2 } }).code());
+    try std.testing.expectEqual(Code.list_modules_response, (Outgoing{ .list_modules_response = .{ .request_id = 1, .evaluator_id = 2 } }).code());
+    try std.testing.expectEqual(Code.initialize_module_reader_response, (Outgoing{ .initialize_module_reader_response = .{ .request_id = 1 } }).code());
+    try std.testing.expectEqual(Code.initialize_resource_reader_response, (Outgoing{ .initialize_resource_reader_response = .{ .request_id = 1 } }).code());
+}
+
+test "codec fromPayload decodes required optional and bool fields" {
     const allocator = std.testing.allocator;
 
     var payload = msgpack.Payload.mapPayload(allocator);
@@ -141,30 +249,30 @@ test "utils FromPayload decodes required optional and bool fields" {
     try payload.mapPut("isGlobbable", msgpack.Payload.boolToPayload(false));
     try payload.mapPut("isLocal", msgpack.Payload.boolToPayload(true));
 
-    const reader = try utils.FromPayload(outgoing.types.ModuleReader, allocator, &payload);
+    const reader = try codec.fromPayload(outgoing.ModuleReader, allocator, &payload);
     try std.testing.expectEqualStrings("customfs:", reader.scheme);
     try std.testing.expect(reader.has_hierarchical_uris);
     try std.testing.expect(!reader.is_globbable);
     try std.testing.expect(reader.is_local);
 }
 
-test "utils FromPayload rejects missing required fields and accepts missing optionals" {
+test "codec fromPayload rejects missing required fields and accepts missing optionals" {
     const allocator = std.testing.allocator;
 
     var missing_required = msgpack.Payload.mapPayload(allocator);
     defer missing_required.free(allocator);
-    try std.testing.expectError(errors.DecodeError.MissingField, utils.FromPayload(incoming.types.ReadResource, allocator, &missing_required));
+    try std.testing.expectError(errors.DecodeError.MissingField, codec.fromPayload(incoming.ReadResource, allocator, &missing_required));
 
     var response_payload = msgpack.Payload.mapPayload(allocator);
     defer response_payload.free(allocator);
     try response_payload.mapPut("requestId", msgpack.Payload.intToPayload(1));
-    const response = try utils.FromPayload(incoming.types.CreateEvaluatorResponse, allocator, &response_payload);
+    const response = try codec.fromPayload(incoming.CreateEvaluatorResponse, allocator, &response_payload);
     try std.testing.expectEqual(@as(i64, 1), response.request_id);
     try std.testing.expect(response.evaluator_id == null);
     try std.testing.expect(response.@"error" == null);
 }
 
-test "utils FromPayload decodes nested structs and slices" {
+test "codec fromPayload decodes nested structs and slices" {
     const allocator = std.testing.allocator;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -190,7 +298,7 @@ test "utils FromPayload decodes nested structs and slices" {
 
     try payload.mapPut("pathElements", elements);
 
-    const response = try utils.FromPayload(outgoing.types.ListModulesResponse, arena_allocator, &payload);
+    const response = try codec.fromPayload(outgoing.ListModulesResponse, arena_allocator, &payload);
     try std.testing.expectEqual(@as(i64, 5), response.request_id);
     try std.testing.expectEqual(@as(i64, 9), response.evaluator_id);
     try std.testing.expectEqual(@as(usize, 2), response.path_elements.?.len);
@@ -200,7 +308,7 @@ test "utils FromPayload decodes nested structs and slices" {
     try std.testing.expect(response.path_elements.?[1].is_directory);
 }
 
-test "utils ToPayload and FromPayload handle string hash maps" {
+test "codec toPayload and fromPayload handle string hash maps" {
     const allocator = std.testing.allocator;
 
     var source = std.StringHashMap([]const u8).init(allocator);
@@ -208,20 +316,20 @@ test "utils ToPayload and FromPayload handle string hash maps" {
     try source.put("one", "eins");
     try source.put("two", "zwei");
 
-    var payload = try utils.ToPayload(allocator, source);
+    var payload = try codec.toPayload(allocator, source);
     defer payload.free(allocator);
 
-    var decoded = try utils.FromPayload(std.StringHashMap([]const u8), allocator, &payload);
+    var decoded = try codec.fromPayload(std.StringHashMap([]const u8), allocator, &payload);
     defer decoded.deinit();
 
     try std.testing.expectEqualStrings("eins", decoded.get("one").?);
     try std.testing.expectEqualStrings("zwei", decoded.get("two").?);
 }
 
-test "utils ToPayload uses protocol string and binary field encodings" {
+test "codec toPayload uses protocol string and binary field encodings" {
     const allocator = std.testing.allocator;
 
-    var resource = try utils.ToPayload(allocator, outgoing.types.ReadResourceResponse{
+    var resource = try codec.toPayload(allocator, outgoing.ReadResourceResponse{
         .request_id = 1,
         .evaluator_id = 2,
         .contents = "bytes",
@@ -231,7 +339,7 @@ test "utils ToPayload uses protocol string and binary field encodings" {
     try std.testing.expect(resource_contents == .bin);
     try std.testing.expectEqualStrings("bytes", try resource_contents.asBin());
 
-    var module = try utils.ToPayload(allocator, outgoing.types.ReadModuleResponse{
+    var module = try codec.toPayload(allocator, outgoing.ReadModuleResponse{
         .request_id = 1,
         .evaluator_id = 2,
         .contents = "module text",
@@ -242,10 +350,10 @@ test "utils ToPayload uses protocol string and binary field encodings" {
     try std.testing.expectEqualStrings("module text", try module_contents.asStr());
 }
 
-test "utils ToPayload encodes nested CreateEvaluator fields and omits null optionals" {
+test "codec toPayload encodes nested CreateEvaluator fields and omits null optionals" {
     const allocator = std.testing.allocator;
 
-    const evaluator = outgoing.types.CreateEvaluator{
+    const evaluator = outgoing.CreateEvaluator{
         .request_id = 135,
         .allowed_modules = &.{ "pkl:", "file:" },
         .client_module_readers = &.{
@@ -258,7 +366,7 @@ test "utils ToPayload encodes nested CreateEvaluator fields and omits null optio
         },
     };
 
-    var payload = try utils.ToPayload(allocator, evaluator);
+    var payload = try codec.toPayload(allocator, evaluator);
     defer payload.free(allocator);
 
     try std.testing.expect((try payload.mapGet("rootDir")) == null);
@@ -274,7 +382,48 @@ test "utils ToPayload encodes nested CreateEvaluator fields and omits null optio
     try std.testing.expect((try reader.mapGet("isLocal")).?.bool);
 }
 
+test "codec toPayload encodes project dependency wire shape" {
+    const allocator = std.testing.allocator;
+
+    var dependencies = std.StringHashMap(*outgoing.ProjectOrDependency).init(allocator);
+    defer dependencies.deinit();
+
+    var checksums = outgoing.Checksums{ .sha256 = "abc123" };
+    var dependency = outgoing.ProjectOrDependency{
+        .remote_dependency = .{
+            .package_uri = "package://example.com/demo@1.0.0",
+            .checksums = &checksums,
+        },
+    };
+    try dependencies.put("demo", &dependency);
+
+    var project = outgoing.Project{
+        .package_uri = "package://example.com/root@1.0.0",
+        .project_file_uri = "file:///repo/PklProject",
+        .dependencies = dependencies,
+    };
+
+    var payload = try codec.toPayload(allocator, outgoing.CreateEvaluator{
+        .request_id = 7,
+        .project = &project,
+    });
+    defer payload.free(allocator);
+
+    const project_payload = (try payload.mapGet("project")).?;
+    try std.testing.expectEqualStrings("local", try (try project_payload.mapGet("type")).?.asStr());
+    try std.testing.expectEqualStrings("file:///repo/PklProject", try (try project_payload.mapGet("projectFileUri")).?.asStr());
+
+    const dependencies_payload = (try project_payload.mapGet("dependencies")).?;
+    const dependency_payload = (try dependencies_payload.mapGet("demo")).?;
+    try std.testing.expectEqualStrings("remote", try (try dependency_payload.mapGet("type")).?.asStr());
+
+    const checksums_payload = (try dependency_payload.mapGet("checksums")).?;
+    try std.testing.expectEqualStrings("abc123", try (try checksums_payload.mapGet("sha256")).?.asStr());
+}
+
 test "pkl server session: init -> response" {
+    if (!build_options.integration_tests) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     // 1. Setup the Child Process
@@ -299,7 +448,7 @@ test "pkl server session: init -> response" {
         var packer = msgpack.PackerIO.init(&reader, &writer);
 
         // Prepare Data
-        const ce = outgoing.types.CreateEvaluator{
+        const ce = outgoing.CreateEvaluator{
             .request_id = 135,
             .allowed_modules = &.{ "pkl:", "repl:", "file:", "customfs:" },
             .client_module_readers = &.{
@@ -311,7 +460,7 @@ test "pkl server session: init -> response" {
                 },
             },
         };
-        var msg = outgoing.OutgoingMessage{ .create_evaluator = ce };
+        var msg = Outgoing{ .create_evaluator = ce };
 
         var payload = try msg.encode(allocator);
         defer payload.free(allocator);
@@ -344,7 +493,7 @@ test "pkl server session: init -> response" {
             var payload = try packer.read(allocator);
             defer payload.free(allocator);
 
-            const message = try incoming.IncomingMessage.decode(allocator, &payload);
+            const message = try Incoming.decode(allocator, &payload);
             switch (message) {
                 .create_evaluator_response => |resp| {
                     try std.testing.expectEqual(resp.request_id, 135);

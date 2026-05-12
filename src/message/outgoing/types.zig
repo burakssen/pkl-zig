@@ -15,24 +15,36 @@ pub const ModuleReader = struct {
     is_local: bool = false,
 };
 
-/// Checksums for a project or dependency.
+/// Checksums for a remote project dependency.
 pub const Checksums = struct {
-    checksums: []const u8,
+    sha256: []const u8,
 };
 
-/// Represents a Pkl project or dependency.
-pub const ProjectOrDependency = struct {
+/// Local project settings passed to the evaluator.
+pub const Project = struct {
+    type: []const u8 = "local",
     package_uri: ?[]const u8 = null,
-    type: []const u8,
-    project_file_uri: ?[]const u8 = null,
-    checksums: ?*Checksums = null,
+    project_file_uri: []const u8,
     dependencies: std.StringHashMap(*ProjectOrDependency),
+};
+
+/// Remote dependency settings passed as part of a project.
+pub const RemoteDependency = struct {
+    type: []const u8 = "remote",
+    package_uri: ?[]const u8 = null,
+    checksums: ?*Checksums = null,
+};
+
+/// Represents a local project or remote dependency.
+pub const ProjectOrDependency = union(enum) {
+    project: Project,
+    remote_dependency: RemoteDependency,
 };
 
 /// Proxy settings for HTTP requests.
 pub const Proxy = struct {
     address: ?[]const u8 = null,
-    no_proxy: ?[][]const u8 = null,
+    no_proxy: ?[]const []const u8 = null,
 };
 
 /// HTTP client settings for Pkl.
@@ -62,7 +74,7 @@ pub const CreateEvaluator = struct {
     allowed_resources: ?[]const []const u8 = null,
     root_dir: ?[]const u8 = null,
     cache_dir: ?[]const u8 = null,
-    project: ?*ProjectOrDependency = null,
+    project: ?*Project = null,
     http: ?*Http = null,
     timeout_seconds: ?i64 = null,
     external_module_readers: ?std.StringHashMap(ExternalReader) = null,

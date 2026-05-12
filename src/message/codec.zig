@@ -2,6 +2,39 @@ const std = @import("std");
 const msgpack = @import("msgpack");
 
 const errors = @import("errors.zig");
+const Code = @import("code.zig").Code;
+
+pub const Frame = struct {
+    code: Code,
+    body: msgpack.Payload,
+};
+
+pub fn decodeFrame(payload: *msgpack.Payload) !Frame {
+    const len = try payload.getArrLen();
+    if (len != 2) return errors.DecodeError.InvalidArrayLength;
+
+    const code_payload = try payload.getArrElement(0);
+    const code = std.enums.fromInt(Code, try code_payload.getInt()) orelse {
+        return errors.DecodeError.UnknownMessageCode;
+    };
+
+    return .{
+        .code = code,
+        .body = try payload.getArrElement(1),
+    };
+}
+
+pub fn encodeFrame(allocator: std.mem.Allocator, code: Code, body: msgpack.Payload) !msgpack.Payload {
+    var body_payload = body;
+    errdefer body_payload.free(allocator);
+
+    var payload = try msgpack.Payload.arrPayload(2, allocator);
+    errdefer payload.free(allocator);
+
+    try payload.setArrElement(0, msgpack.Payload.intToPayload(@intFromEnum(code)));
+    try payload.setArrElement(1, body_payload);
+    return payload;
+}
 
 /// Converts a snake_case string to camelCase.
 /// Special case for "error" field.
@@ -38,7 +71,7 @@ pub fn snakeToCamel(comptime input: []const u8) []const u8 {
 }
 
 /// Decodes a msgpack map payload into a struct of type T.
-pub fn FromPayload(comptime T: type, allocator: std.mem.Allocator, payload: *msgpack.Payload) !T {
+pub fn fromPayload(comptime T: type, allocator: std.mem.Allocator, payload: *msgpack.Payload) !T {
     return fromPayloadValue(T, allocator, payload.*);
 }
 
@@ -154,7 +187,7 @@ fn fromPayloadStringHashMap(comptime T: type, allocator: std.mem.Allocator, payl
 }
 
 /// Encodes a value into a msgpack payload.
-pub fn ToPayload(allocator: std.mem.Allocator, value: anytype) (errors.EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
+pub fn toPayload(allocator: std.mem.Allocator, value: anytype) (errors.EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
     return toPayloadValue(allocator, value, false);
 }
 
@@ -187,6 +220,7 @@ fn toPayloadValue(
         .bool => msgpack.Payload.boolToPayload(value),
         .pointer => |ptr_info| encodePointer(allocator, value, ptr_info, encode_u8_slice_as_bin),
         .array => toPayloadValue(allocator, value[0..], encode_u8_slice_as_bin),
+        .@"union" => encodeUnion(allocator, value, encode_u8_slice_as_bin),
         .optional => {
             if (value) |v| {
                 return toPayloadValue(allocator, v, encode_u8_slice_as_bin);
@@ -194,6 +228,16 @@ fn toPayloadValue(
             return msgpack.Payload.nilToPayload();
         },
         else => @compileError("Unsupported type for encoding: " ++ @typeName(T)),
+    };
+}
+
+fn encodeUnion(
+    allocator: std.mem.Allocator,
+    value: anytype,
+    comptime encode_u8_slice_as_bin: bool,
+) !msgpack.Payload {
+    return switch (value) {
+        inline else => |payload| toPayloadValue(allocator, payload, encode_u8_slice_as_bin),
     };
 }
 

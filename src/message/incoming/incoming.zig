@@ -2,16 +2,26 @@ const std = @import("std");
 const msgpack = @import("msgpack");
 
 const message = @import("message");
-const utils = message.utils;
+const Code = message.Code;
+const codec = message.codec;
 const errors = message.errors;
+const types = @import("types.zig");
 
-pub const code = @import("code.zig");
-pub const types = @import("types.zig");
+pub const CreateEvaluatorResponse = types.CreateEvaluatorResponse;
+pub const EvaluateResponse = types.EvaluateResponse;
+pub const Log = types.Log;
+pub const ReadResource = types.ReadResource;
+pub const ReadModule = types.ReadModule;
+pub const ListResources = types.ListResources;
+pub const ListModules = types.ListModules;
+pub const InitializeModuleReader = types.InitializeModuleReader;
+pub const InitializeResourceReader = types.InitializeResourceReader;
+pub const CloseExternalProcess = types.CloseExternalProcess;
 
 const log = std.log.scoped(.@"pkl-zig|message|incoming");
 
 /// Represents any message received from Pkl.
-pub const IncomingMessage = union(enum) {
+pub const Message = union(enum) {
     create_evaluator_response: types.CreateEvaluatorResponse,
     evaluate_response: types.EvaluateResponse,
     log: types.Log,
@@ -23,39 +33,38 @@ pub const IncomingMessage = union(enum) {
     initialize_resource_reader: types.InitializeResourceReader,
     close_external_process: types.CloseExternalProcess,
 
-    pub fn decode(allocator: std.mem.Allocator, payload: *msgpack.Payload) !IncomingMessage {
-        log.debug("Decoding IncomingMessage from payload.", .{});
-        // 1. Decode the outer array length (e.g., [code, body])
-        const len = try payload.getArrLen();
-        if (len < 2) return errors.DecodeError.InvalidArrayLength;
+    pub fn decode(allocator: std.mem.Allocator, payload: *msgpack.Payload) !Message {
+        log.debug("Decoding incoming message.", .{});
+        var frame = try codec.decodeFrame(payload);
+        log.debug("Decoded incoming message code: {s}.", .{@tagName(frame.code)});
 
-        // 2. Decode the integer code
-        const code_payload = try payload.getArrElement(0);
-
-        // 3. Safely convert integer to Enum
-        const code_val = std.enums.fromInt(code.Code, try code_payload.getInt()) orelse {
-            return errors.DecodeError.UnknownMessageCode;
+        return switch (frame.code) {
+            .new_evaluator_response => .{ .create_evaluator_response = try codec.fromPayload(types.CreateEvaluatorResponse, allocator, &frame.body) },
+            .evaluate_response => .{ .evaluate_response = try codec.fromPayload(types.EvaluateResponse, allocator, &frame.body) },
+            .evaluate_log => .{ .log = try codec.fromPayload(types.Log, allocator, &frame.body) },
+            .evaluate_read => .{ .read_resource = try codec.fromPayload(types.ReadResource, allocator, &frame.body) },
+            .evaluate_read_module => .{ .read_module = try codec.fromPayload(types.ReadModule, allocator, &frame.body) },
+            .list_resources_request => .{ .list_resources = try codec.fromPayload(types.ListResources, allocator, &frame.body) },
+            .list_modules_request => .{ .list_modules = try codec.fromPayload(types.ListModules, allocator, &frame.body) },
+            .initialize_module_reader_request => .{ .initialize_module_reader = try codec.fromPayload(types.InitializeModuleReader, allocator, &frame.body) },
+            .initialize_resource_reader_request => .{ .initialize_resource_reader = try codec.fromPayload(types.InitializeResourceReader, allocator, &frame.body) },
+            .close_external_process => .{ .close_external_process = try codec.fromPayload(types.CloseExternalProcess, allocator, &frame.body) },
+            else => errors.DecodeError.UnknownMessageCode,
         };
+    }
 
-        log.debug("Decoded message code: [{s}.{s}] = {d}.", .{ @typeName(@TypeOf(code_val)), @tagName(code_val), code_val });
-
-        // 4. Get the body payload (the second element in the array)
-        var body_payload = try payload.getArrElement(1);
-
-        // 5. Switch on the code to decode the specific payload
-        switch (code_val) {
-            .new_evaluator_response => return .{ .create_evaluator_response = try utils.FromPayload(types.CreateEvaluatorResponse, allocator, &body_payload) },
-            .evaluate_response => return .{ .evaluate_response = try utils.FromPayload(types.EvaluateResponse, allocator, &body_payload) },
-            .evaluate_log => return .{ .log = try utils.FromPayload(types.Log, allocator, &body_payload) },
-            .evaluate_read => return .{ .read_resource = try utils.FromPayload(types.ReadResource, allocator, &body_payload) },
-            .evaluate_read_module => return .{ .read_module = try utils.FromPayload(types.ReadModule, allocator, &body_payload) },
-            .list_resources_request => return .{ .list_resources = try utils.FromPayload(types.ListResources, allocator, &body_payload) },
-            .list_modules_request => return .{ .list_modules = try utils.FromPayload(types.ListModules, allocator, &body_payload) },
-            .initialize_module_reader_request => return .{ .initialize_module_reader = try utils.FromPayload(types.InitializeModuleReader, allocator, &body_payload) },
-            .initialize_resource_reader_request => return .{ .initialize_resource_reader = try utils.FromPayload(types.InitializeResourceReader, allocator, &body_payload) },
-            .close_external_process => return .{ .close_external_process = try utils.FromPayload(types.CloseExternalProcess, allocator, &body_payload) },
-        }
-
-        log.debug("Successfully decoded IncomingMessage.", .{});
+    pub fn code(self: Message) Code {
+        return switch (self) {
+            .create_evaluator_response => .new_evaluator_response,
+            .evaluate_response => .evaluate_response,
+            .log => .evaluate_log,
+            .read_resource => .evaluate_read,
+            .read_module => .evaluate_read_module,
+            .list_resources => .list_resources_request,
+            .list_modules => .list_modules_request,
+            .initialize_module_reader => .initialize_module_reader_request,
+            .initialize_resource_reader => .initialize_resource_reader_request,
+            .close_external_process => .close_external_process,
+        };
     }
 };

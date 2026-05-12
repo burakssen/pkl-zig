@@ -1,7 +1,7 @@
 // Note: This file is a port of the original Go implementation to Zig.
-// Ported to Zig by Burak Şen, 2026
+// Ported to Zig by Burak Sen, 2026
 //===----------------------------------------------------------------------===//
-// Copyright © 2024-2025 Apple Inc. and the Pkl project authors. All rights reserved.
+// Copyright 2024-2025 Apple Inc. and the Pkl project authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,14 +18,23 @@
 
 /// Message codes for the Pkl Message API.
 pub const Code = enum(i64) {
+    new_evaluator = 0x20,
     new_evaluator_response = 0x21,
+    close_evaluator = 0x22,
+    evaluate = 0x23,
     evaluate_response = 0x24,
     evaluate_log = 0x25,
     evaluate_read = 0x26,
+    evaluate_read_response = 0x27,
     evaluate_read_module = 0x28,
+    evaluate_read_module_response = 0x29,
     list_resources_request = 0x2a,
+    list_resources_response = 0x2b,
     list_modules_request = 0x2c,
+    list_modules_response = 0x2d,
     initialize_module_reader_request = 0x2e,
+    initialize_module_reader_response = 0x2f,
     initialize_resource_reader_request = 0x30,
+    initialize_resource_reader_response = 0x31,
     close_external_process = 0x32,
 };
