@@ -14,17 +14,79 @@ clazz: reflect.Class = mapping.source as reflect.Class
 
 classInfo: ZigMapping.Class = mapping as ZigMapping.Class
 
+local function resolvePropertyType(owner: reflect.Class, prop: reflect.Property): reflect.Type =
+  if (prop.type is reflect.UnknownType && owner.superclass != null)
+    let (superProp = owner.superclass!!.allProperties.getOrNull(prop.name))
+      if (superProp != null) resolvePropertyType(owner.superclass!!, superProp!!) else prop.type
+  else
+    prop.type
+
+local function genericDeclarationForType(type: reflect.Type): reflect.TypeDeclaration? =
+  if (type is reflect.NullableType)
+    genericDeclarationForType(type.member)
+  else if (type is reflect.DeclaredType)
+    let (referent = type.referent)
+      if (
+        referent is reflect.Class
+          && (referent.modifiers.contains("abstract") || referent.modifiers.contains("open"))
+          && !referent.enclosingDeclaration.uri.startsWith("pkl:")
+      )
+        referent
+      else
+        null
+  else
+    null
+
+local function genericParamName(decl: reflect.TypeDeclaration): String = "\(utils.toZigName(decl))Type"
+
+local function hasLegalOverride(owner: reflect.Class, prop: reflect.Property): Boolean =
+  if (prop.type is reflect.UnknownType || owner.superclass == null)
+    true
+  else
+    let (superProp = owner.superclass!!.allProperties.getOrNull(prop.name))
+      if (superProp == null || superProp!!.type is reflect.UnknownType)
+        true
+      else
+        let (propType = typegen.generateType(prop.type, owner, module.mappings).render(classInfo.packageName))
+        let (superType = typegen.generateType(resolvePropertyType(owner.superclass!!, superProp!!), owner.superclass!!, module.mappings).render(classInfo.packageName))
+          if (propType == superType)
+            true
+          else
+            throw("Illegal override: property `\(prop.name)` in `\(owner.reflectee)` has Zig type `\(propType)`, but inherited property has Zig type `\(superType)`.")
+
+local function hasLegalOverrides(): Boolean =
+  clazz.properties.values.every((prop) -> hasLegalOverride(clazz, prop))
+
+local sourceProperties =
+  if (clazz.enclosingDeclaration.moduleClass == clazz)
+    clazz.properties
+  else
+    clazz.allProperties
+
+local genericTypes: Mapping<reflect.TypeDeclaration, String> = new Mapping {
+  when (clazz.enclosingDeclaration.moduleClass == clazz) {
+    for (_, prop in sourceProperties) {
+      when (genericDeclarationForType(resolvePropertyType(clazz, prop)) != null) {
+        [genericDeclarationForType(resolvePropertyType(clazz, prop))!!] =
+          genericParamName(genericDeclarationForType(resolvePropertyType(clazz, prop))!!)
+      }
+    }
+  }
+}
+
+local genericParams = genericTypes.fold(List(), (acc, _, value) -> acc.add(value))
+
 local fields: Map<String, ZigStructField> =
-  clazz.properties
+  sourceProperties
     .filter((_, prop: reflect.Property) -> !prop.allModifiers.contains("hidden"))
     .mapValues((_, prop: reflect.Property) -> new ZigStructField {
       name = utils.toZigFieldName(prop)
       pklName = prop.name
-      type = typegen.generateType(prop.type, clazz, module.mappings)
+      type = typegen.generateTypeWithGenerics(resolvePropertyType(clazz, prop), clazz, module.mappings, genericTypes)
       docComment = prop.docComment
     })
 
-contents =
+contents: String(hasLegalOverrides()) =
   new Listing {
     utils.renderHeaderComment(clazz.enclosingDeclaration)
     "const std = @import(\"std\");"
@@ -36,7 +98,10 @@ contents =
     when (clazz.docComment != null) {
       utils.renderDocComment(clazz.docComment!!, "")
     }
-    "pub const \(classInfo.name) = struct {"
+    if (genericParams.isEmpty)
+      "pub const \(classInfo.name) = struct {"
+    else
+      "pub fn \(classInfo.name)(\(genericParams.map((it) -> "comptime \(it): type").join(", "))) type { return struct {"
     for (_, field in fields) {
       when (field.docComment != null) {
         utils.renderDocComment(field.docComment!!, "    ")
@@ -52,22 +117,25 @@ contents =
     ""
     "    const field_names = [_]struct { zig: []const u8, pkl: []const u8 }{"
     for (_, field in fields) {
-      "        .{ .zig = \(utils.toZigString(field.name)), .pkl = \(utils.toZigString(field.pklName)) },"
+      "        .{ .zig = \(utils.toZigString(utils.identifierFieldName(field.name))), .pkl = \(utils.toZigString(field.pklName)) },"
     }
     "    };"
     when (clazz.enclosingDeclaration.moduleClass == clazz) {
       ""
-      "    pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !\(classInfo.name) {"
+      "    pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !@This() {"
       "        var evaluator = try pkl.Evaluator.init(io, allocator, .{});"
       "        defer evaluator.deinit();"
-      "        return evaluator.loadFromPath(\(classInfo.name), path);"
+      "        return evaluator.loadFromPath(@This(), path);"
       "    }"
       ""
-      "    pub fn load(evaluator: *pkl.Evaluator, module_uri: []const u8) !\(classInfo.name) {"
-      "        return evaluator.load(\(classInfo.name), module_uri);"
+      "    pub fn load(evaluator: *pkl.Evaluator, module_uri: []const u8) !@This() {"
+      "        return evaluator.load(@This(), module_uri);"
       "    }"
     }
-    "};"
+    if (genericParams.isEmpty)
+      "};"
+    else
+      "}; }"
     ""
   }.join("\n")
 

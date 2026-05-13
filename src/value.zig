@@ -268,9 +268,17 @@ pub fn fromValue(comptime T: type, allocator: std.mem.Allocator, value: Value) D
             else => DecodeError.UnsupportedType,
         },
         .optional => |opt| if (value == .null) null else try fromValue(opt.child, allocator, value),
-        .@"struct" => decodeStruct(T, allocator, value),
+        .@"struct" => if (comptime isHashMap(T))
+            decodeHashMap(T, allocator, value)
+        else if (comptime isPair(T))
+            decodePairStruct(T, allocator, value)
+        else
+            decodeStruct(T, allocator, value),
         .@"enum" => switch (value) {
-            .string => |str| std.meta.stringToEnum(T, str) orelse DecodeError.UnsupportedType,
+            .string => |str| if (@hasDecl(T, "parse"))
+                try T.parse(str)
+            else
+                std.meta.stringToEnum(T, str) orelse DecodeError.UnsupportedType,
             else => DecodeError.UnsupportedType,
         },
         else => DecodeError.UnsupportedType,
@@ -311,6 +319,75 @@ fn decodeStruct(comptime T: type, allocator: std.mem.Allocator, value: Value) De
         }
     }
     return result;
+}
+
+fn decodeHashMap(comptime T: type, allocator: std.mem.Allocator, value: Value) DecodeError!T {
+    const entries = switch (value) {
+        .map => |entries| entries,
+        else => return DecodeError.UnsupportedType,
+    };
+
+    const Key = hashMapKeyType(T);
+    const Elem = hashMapValueType(T);
+    var result = T.init(allocator);
+    errdefer result.deinit();
+
+    for (entries) |entry| {
+        const key = try fromValue(Key, allocator, entry.key);
+        errdefer if (Key == []const u8) allocator.free(key);
+        const elem = try fromValue(Elem, allocator, entry.value);
+        try result.put(key, elem);
+    }
+
+    return result;
+}
+
+fn decodePairStruct(comptime T: type, allocator: std.mem.Allocator, value: Value) DecodeError!T {
+    const pair = switch (value) {
+        .pair => |pair| pair,
+        else => return DecodeError.UnsupportedType,
+    };
+    return .{
+        .first = try fromValue(pairFirstType(T), allocator, pair.first.*),
+        .second = try fromValue(pairSecondType(T), allocator, pair.second.*),
+    };
+}
+
+fn isHashMap(comptime T: type) bool {
+    return std.mem.startsWith(u8, @typeName(T), "hash_map.HashMap(");
+}
+
+fn hashMapKeyType(comptime T: type) type {
+    const KV = @field(T, "KV");
+    const info = @typeInfo(KV).@"struct";
+    inline for (info.fields) |field| {
+        if (std.mem.eql(u8, field.name, "key")) return field.type;
+    }
+    @compileError("Unable to determine HashMap key type: " ++ @typeName(T));
+}
+
+fn hashMapValueType(comptime T: type) type {
+    const KV = @field(T, "KV");
+    const info = @typeInfo(KV).@"struct";
+    inline for (info.fields) |field| {
+        if (std.mem.eql(u8, field.name, "value")) return field.type;
+    }
+    @compileError("Unable to determine HashMap value type: " ++ @typeName(T));
+}
+
+fn isPair(comptime T: type) bool {
+    const info = @typeInfo(T).@"struct";
+    return info.fields.len == 2 and
+        std.mem.eql(u8, info.fields[0].name, "first") and
+        std.mem.eql(u8, info.fields[1].name, "second");
+}
+
+fn pairFirstType(comptime T: type) type {
+    return @typeInfo(T).@"struct".fields[0].type;
+}
+
+fn pairSecondType(comptime T: type) type {
+    return @typeInfo(T).@"struct".fields[1].type;
 }
 
 fn fromArrayPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) DecodeError!Value {
@@ -488,4 +565,45 @@ test "decode generic object into struct" {
     const Bird = struct { name: []const u8 };
     const bird = try fromValue(Bird, allocator, value);
     try std.testing.expectEqualStrings("Bird", bird.name);
+}
+
+test "decode map into StringHashMap" {
+    const allocator = std.testing.allocator;
+
+    var entries = [_]Entry{
+        .{
+            .key = .{ .string = "city" },
+            .value = .{ .string = "London" },
+        },
+    };
+    const value: Value = .{ .map = entries[0..] };
+
+    var decoded = try fromValue(std.StringHashMap([]const u8), allocator, value);
+    defer {
+        var it = decoded.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        decoded.deinit();
+    }
+
+    try std.testing.expectEqualStrings("London", decoded.get("city").?);
+}
+
+test "decode typed pair" {
+    const allocator = std.testing.allocator;
+
+    var first: Value = .{ .string = "name" };
+    var second: Value = .{ .int = 42 };
+    const value: Value = .{ .pair = .{
+        .first = &first,
+        .second = &second,
+    } };
+
+    const decoded = try fromValue(Pair([]const u8, i64), allocator, value);
+    defer allocator.free(decoded.first);
+
+    try std.testing.expectEqualStrings("name", decoded.first);
+    try std.testing.expectEqual(@as(i64, 42), decoded.second);
 }

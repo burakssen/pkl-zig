@@ -1,0 +1,10 @@
+@zig.Package { name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/fieldannotations" }
+module FieldAnnotations
+
+import ".../src/zig.pkl"
+
+@zig.Field { name = "renamed" }
+res: String
+
+@zig.Field
+res2: String

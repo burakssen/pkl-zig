@@ -25,13 +25,19 @@ class Map extends Type {
       "std.AutoHashMap(\(key.render(currentPackage)), \(elem.render(currentPackage)))"
 }
 
+class Pair extends Type {
+  first: Type
+  second: Type
+  function render(currentPackage: String) = "pkl.Pair(\(first.render(currentPackage)), \(second.render(currentPackage)))"
+}
+
 class Declared extends Type {
   packageName: String?
   typeName: String
 
   function render(currentPackage: String) =
     if (packageName != null && packageName != currentPackage)
-      "\(packageName).\(typeName)"
+      "@import(\"\(packageName!!)\").\(typeName)"
     else
       typeName
 }

@@ -35,6 +35,10 @@ function isEnumLike(decl: reflect.TypeDeclaration) =
         && referent.members
           .filter((t) -> t is reflect.StringLiteralType)
           .every((it: reflect.StringLiteralType) -> utils.canBeNormalizedToEnumName(it.value))
+        && referent.members
+          .filter((t) -> t is reflect.StringLiteralType)
+          .map((it: reflect.StringLiteralType) -> utils.normalizeEnumName(it.value))
+          .isDistinct
 
 function gatherEnums(decl: List<reflect.TypeDeclaration>): List<ZigMapping> =
   decl

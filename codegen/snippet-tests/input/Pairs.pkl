@@ -1,0 +1,18 @@
+@zig.Package { name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/pairs" }
+open module Pairs
+
+import ".../src/zig.pkl"
+
+untyped: Pair
+
+optional: Pair?
+
+typed: Pair<String, Int>
+
+aliased: MyPair
+
+typeArgAliased: OurPair
+
+typealias MyPair = Pair<String, Any>
+typealias OurPair = Pair<String, Foo>
+typealias Foo = Int

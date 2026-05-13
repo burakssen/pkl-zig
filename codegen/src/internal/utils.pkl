@@ -57,13 +57,28 @@ function normalizeTypeName(name: String) =
   let (pascaled = parts.map((p) -> p.capitalize()).join(""))
     if (pascaled.isEmpty || !pascaled[0].matches(Regex(#"[A-Za-z_]"#))) "N" + pascaled else pascaled
 
+function escapeIdentifierName(name: String) = "@\"" + name.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"") + "\""
+
+function identifierFieldName(name: String) =
+  if (name.startsWith("@\"") && name.endsWith("\""))
+    name.drop(2).dropLast(1).replaceAll("\\\"", "\"").replaceAll("\\\\", "\\")
+  else
+    name
+
 function normalizeFieldName(name: String) =
   let (parts = splitName(name))
   let (joined = if (parts.isEmpty) "field" else parts.join("_").toLowerCase())
   let (identifier = if (!joined[0].matches(Regex(#"[A-Za-z_]"#))) "_" + joined else joined)
-    if (keywords.contains(identifier)) "@\"" + identifier + "\"" else identifier
+    if (!identifier.matches(Regex(#"[A-Za-z_][A-Za-z0-9_]*"#)))
+      escapeIdentifierName(identifier)
+    else if (keywords.contains(identifier))
+      escapeIdentifierName(identifier)
+    else
+      identifier
 
-function canBeNormalizedToEnumName(name: String) = name == "" || !splitName(name).isEmpty
+function canBeNormalizedToEnumName(name: String) =
+  let (normalized = normalizeEnumName(name))
+    normalized.matches(Regex(#"[A-Za-z_][A-Za-z0-9_]*"#))
 
 function normalizeEnumName(name: String) =
   if (name == "") "empty" else normalizeFieldName(name).replaceAll("@\"", "").replaceAll("\"", "")

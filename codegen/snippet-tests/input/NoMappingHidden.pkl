@@ -1,0 +1,7 @@
+@zig.Package { name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/nomappinghidden" }
+module NoMappingHidden
+
+import ".../src/zig.pkl"
+import "support/NoMapping.pkl"
+
+hidden noMapping: NoMapping

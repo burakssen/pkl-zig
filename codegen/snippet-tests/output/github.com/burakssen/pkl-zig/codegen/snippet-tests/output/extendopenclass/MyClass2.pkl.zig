@@ -1,0 +1,22 @@
+// Code generated from Pkl module `ExtendingOpenClass`. DO NOT EDIT.
+const std = @import("std");
+const pkl = @import("pkl");
+const ExtendingOpenClass = @import("ExtendingOpenClass.pkl.zig").ExtendingOpenClass;
+const MyClass = @import("MyClass.pkl.zig").MyClass;
+const MyOpenClass = @import("MyOpenClass.pkl.zig").MyOpenClass;
+
+pub const MyClass2 = struct {
+    duck: []const u8,
+    myboolean: bool,
+
+    pub fn pklFieldName(comptime field_name: []const u8) []const u8 {
+        return inline for (field_names) |entry| {
+            if (std.mem.eql(u8, field_name, entry.zig)) break entry.pkl;
+        } else field_name;
+    }
+
+    const field_names = [_]struct { zig: []const u8, pkl: []const u8 }{
+        .{ .zig = "duck", .pkl = "duck" },
+        .{ .zig = "myboolean", .pkl = "myBoolean" },
+    };
+};

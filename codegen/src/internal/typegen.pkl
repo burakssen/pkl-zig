@@ -12,16 +12,23 @@ function generateType(
   type: reflect.Type,
   enclosing: reflect.TypeDeclaration,
   seenMappings: List<ZigMapping>
+): Type = generateTypeWithGenerics(type, enclosing, seenMappings, new Mapping {})
+
+function generateTypeWithGenerics(
+  type: reflect.Type,
+  enclosing: reflect.TypeDeclaration,
+  seenMappings: List<ZigMapping>,
+  genericTypes: Mapping<reflect.TypeDeclaration, String>
 ): Type =
   if (type is reflect.NullableType)
-    new Type.Optional { elem = generateType(type.member, enclosing, seenMappings) }
+    new Type.Optional { elem = generateTypeWithGenerics(type.member, enclosing, seenMappings, genericTypes) }
   else if (type is reflect.DeclaredType)
-    generateDeclaredType(type, enclosing, seenMappings)
+    generateDeclaredType(type, enclosing, seenMappings, genericTypes)
   else if (type is reflect.ModuleType)
     let (moduleClass = enclosing.enclosingDeclaration.moduleClass)
-      generateType(reflect.DeclaredType(moduleClass), moduleClass, seenMappings)
+      generateTypeWithGenerics(reflect.DeclaredType(moduleClass), moduleClass, seenMappings, genericTypes)
   else if (type is reflect.UnionType)
-    generateUnionType(type, seenMappings)
+    generateUnionType(type, seenMappings, genericTypes)
   else if (type is reflect.UnknownType)
     anyType
   else if (type is reflect.NothingType)
@@ -31,7 +38,11 @@ function generateType(
   else
     anyType
 
-function generateUnionType(type: reflect.UnionType, seenMappings: List<ZigMapping>): Type =
+function generateUnionType(
+  type: reflect.UnionType,
+  seenMappings: List<ZigMapping>,
+  genericTypes: Mapping<reflect.TypeDeclaration, String>
+): Type =
   if (type.members.every((it) -> it is reflect.StringLiteralType || it == reflect.stringType))
     new Type.Declared { typeName = "[]const u8" }
   else
@@ -40,24 +51,28 @@ function generateUnionType(type: reflect.UnionType, seenMappings: List<ZigMappin
 function generateDeclaredType(
   type: reflect.DeclaredType,
   enclosing: reflect.TypeDeclaration,
-  seenMappings: List<ZigMapping>
+  seenMappings: List<ZigMapping>,
+  genericTypes: Mapping<reflect.TypeDeclaration, String>
 ): Type =
   let (referent = type.referent)
   let (reflectee = referent.reflectee)
   let (mapped = seenMappings.findOrNull((it) -> it.source == referent))
-    if (mapped != null)
+  let (genericType = genericTypes.getOrNull(referent))
+    if (genericType != null)
+      new Type.Declared { typeName = genericType!! }
+    else if (mapped != null)
       mapped.type
     else if (mappedTypes.containsKey(reflectee))
       mappedTypes[reflectee]
     else if (referent is reflect.TypeAlias)
-      generateType(referent.referent, enclosing, seenMappings)
+      generateTypeWithGenerics(referent.referent, enclosing, seenMappings, genericTypes)
     else if (reflectee == List || reflectee == Listing || reflectee == Set)
       new Type.Slice {
         elem =
           if (type.typeArguments.getOrNull(0) == null)
             anyType
           else
-            generateType(type.typeArguments[0], enclosing, seenMappings)
+            generateTypeWithGenerics(type.typeArguments[0], enclosing, seenMappings, genericTypes)
       }
     else if (reflectee == Map || reflectee == Mapping)
       new Type.Map {
@@ -65,15 +80,26 @@ function generateDeclaredType(
           if (type.typeArguments.getOrNull(0) == null)
             anyType
           else
-            generateType(type.typeArguments[0], enclosing, seenMappings)
+            generateTypeWithGenerics(type.typeArguments[0], enclosing, seenMappings, genericTypes)
         elem =
           if (type.typeArguments.getOrNull(1) == null)
             anyType
           else
-            generateType(type.typeArguments[1], enclosing, seenMappings)
+            generateTypeWithGenerics(type.typeArguments[1], enclosing, seenMappings, genericTypes)
       }
     else if (reflectee == Pair)
-      new Type.Declared { typeName = "pkl.Pair(pkl.Value, pkl.Value)" }
+      new Type.Pair {
+        first =
+          if (type.typeArguments.getOrNull(0) == null)
+            anyType
+          else
+            generateTypeWithGenerics(type.typeArguments[0], enclosing, seenMappings, genericTypes)
+        second =
+          if (type.typeArguments.getOrNull(1) == null)
+            anyType
+          else
+            generateTypeWithGenerics(type.typeArguments[1], enclosing, seenMappings, genericTypes)
+      }
     else
       anyType
 

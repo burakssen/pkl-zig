@@ -1,0 +1,6 @@
+@zig.Package { name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/import" }
+module PackageNameKeyword
+
+import ".../src/zig.pkl"
+
+foo: String

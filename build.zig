@@ -125,4 +125,95 @@ pub fn build(b: *std.Build) void {
     const integration_test = b.addTest(.{ .root_module = integration_message_mod });
     const integration_cmd = b.addRunArtifact(integration_test);
     integration_step.dependOn(&integration_cmd.step);
+
+    const snippet_step = b.step("codegen-snippet-test", "Generate and compile codegen snippet fixtures");
+    const snippet_output_dir = "codegen/snippet-tests/output";
+    const snippet_codegen_cmd = b.addSystemCommand(&.{ "pkl", "run", "codegen/src/gen.pkl", "--output-path", snippet_output_dir });
+    snippet_codegen_cmd.stdio = .inherit;
+    const snippet_inputs = [_][]const u8{
+        "codegen/snippet-tests/input/Classes.pkl",
+        "codegen/snippet-tests/input/CyclicModule.pkl",
+        "codegen/snippet-tests/input/EmptyOpenModule.pkl",
+        "codegen/snippet-tests/input/ExplicitName.pkl",
+        "codegen/snippet-tests/input/ExtendAbstractClass.pkl",
+        "codegen/snippet-tests/input/ExtendModule.pkl",
+        "codegen/snippet-tests/input/ExtendOpenClass.pkl",
+        "codegen/snippet-tests/input/HiddenProperties.pkl",
+        "codegen/snippet-tests/input/ModuleType.pkl",
+        "codegen/snippet-tests/input/ModuleUsingLib.pkl",
+        "codegen/snippet-tests/input/NoMappingHidden.pkl",
+        "codegen/snippet-tests/input/Override.pkl",
+        "codegen/snippet-tests/input/Override2.pkl",
+        "codegen/snippet-tests/input/PackageNameKeyword.pkl",
+        "codegen/snippet-tests/input/Pairs.pkl",
+        "codegen/snippet-tests/input/StructTags.pkl",
+        "codegen/snippet-tests/input/UnionNameKeyword.pkl",
+        "codegen/snippet-tests/input/Unions.pkl",
+    };
+    for (&snippet_inputs) |input| {
+        snippet_codegen_cmd.addFileArg(b.path(input));
+    }
+
+    const snippet_packages = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/bugholder", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/bugholder/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/cyclicmodule", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/cyclicmodule/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/emptyopenmodule", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/emptyopenmodule/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/explicitname", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/explicitname/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendabstractclass", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendabstractclass/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendmodule", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendmodule/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendopenclass", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/extendopenclass/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/fieldannotations", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/fieldannotations/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/hiddenproperties", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/hiddenproperties/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/moduletype", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/moduletype/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/moduleusinglib", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/moduleusinglib/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/nomappinghidden", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/nomappinghidden/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/override", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/override/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/override2", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/override2/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/import", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/import/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/pairs", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/pairs/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib2", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib2/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib3", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib3/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib4", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib4/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/openmodule", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/openmodule/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/union", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/union/index.zig" },
+        .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/unionnamekeyword", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/unionnamekeyword/index.zig" },
+    };
+
+    var snippet_modules: [snippet_packages.len]*std.Build.Module = undefined;
+    for (&snippet_packages, 0..) |pkg, i| {
+        snippet_modules[i] = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path(b.fmt("{s}/{s}", .{ snippet_output_dir, pkg.path })),
+            .imports = &.{.{ .name = "pkl", .module = pkl_mod }},
+        });
+    }
+    for (snippet_modules) |mod| {
+        for (&snippet_packages, 0..) |pkg, i| {
+            mod.addImport(pkg.name, snippet_modules[i]);
+        }
+    }
+
+    const snippet_test_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("codegen/snippet-tests/test.zig"),
+        .imports = &.{.{ .name = "pkl", .module = pkl_mod }},
+    });
+    for (&snippet_packages, 0..) |pkg, i| {
+        snippet_test_mod.addImport(pkg.name, snippet_modules[i]);
+    }
+    const snippet_test = b.addTest(.{ .root_module = snippet_test_mod });
+    snippet_test.step.dependOn(&snippet_codegen_cmd.step);
+    const snippet_test_cmd = b.addRunArtifact(snippet_test);
+    snippet_step.dependOn(&snippet_test_cmd.step);
+
+    const snippet_error_cmd = b.addSystemCommand(&.{
+        "sh",
+        "codegen/snippet-tests/check-errors.sh",
+        "codegen/src/gen.pkl",
+    });
+    _ = snippet_error_cmd.addOutputDirectoryArg("snippet-codegen-errors");
+    snippet_step.dependOn(&snippet_error_cmd.step);
 }
