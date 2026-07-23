@@ -203,6 +203,8 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !Value {
     return fromPayload(allocator, payload);
 }
 
+/// Ownership invariant: decoded Value owns all string/bytes slices via allocator
+/// duplicates, so callers can safely deinit the source msgpack payload first.
 pub fn fromPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) DecodeError!Value {
     return switch (payload) {
         .nil => .null,
@@ -418,7 +420,7 @@ fn fromArrayPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) Deco
         code_regex => .{ .regex = .{ .pattern = try allocator.dupe(u8, try (try payload.getArrElement(1)).asStr()) } },
         code_class => decodeClass(allocator, payload, len),
         code_type_alias => decodeTypeAlias(allocator, payload, len),
-        code_bytes => .{ .bytes = try (try payload.getArrElement(1)).asBin() },
+        code_bytes => .{ .bytes = try allocator.dupe(u8, try (try payload.getArrElement(1)).asBin()) },
         else => decodePlainArray(allocator, payload, len),
     };
 }
@@ -606,4 +608,21 @@ test "decode typed pair" {
 
     try std.testing.expectEqualStrings("name", decoded.first);
     try std.testing.expectEqual(@as(i64, 42), decoded.second);
+}
+
+test "decode code_bytes duplicates payload-backed data" {
+    const allocator = std.testing.allocator;
+
+    var payload = try msgpack.Payload.arrPayload(2, allocator);
+    defer payload.free(allocator);
+    try payload.setArrElement(0, msgpack.Payload.intToPayload(code_bytes));
+    try payload.setArrElement(1, try msgpack.Payload.binToPayload("abc", allocator));
+
+    const source = try (try payload.getArrElement(1)).asBin();
+    var decoded = try fromPayload(allocator, payload);
+    defer decoded.deinit(allocator);
+
+    try std.testing.expect(decoded == .bytes);
+    try std.testing.expectEqualStrings("abc", decoded.bytes);
+    try std.testing.expect(@intFromPtr(source.ptr) != @intFromPtr(decoded.bytes.ptr));
 }

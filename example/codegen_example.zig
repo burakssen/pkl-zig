@@ -7,8 +7,7 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main(init: std.process.Init) !void {
-    var arena = std.heap.ArenaAllocator.init(init.gpa);
-    defer arena.deinit();
+    const arena = init.arena;
     const allocator = arena.allocator();
 
     const config = try appconfig.AppConfig.loadFromPath(

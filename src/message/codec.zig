@@ -71,6 +71,8 @@ pub fn snakeToCamel(comptime input: []const u8) []const u8 {
 }
 
 /// Decodes a msgpack map payload into a struct of type T.
+/// Ownership invariant: returned scalar []const u8/[]u8 fields borrow from the
+/// input payload storage, so callers must keep the backing payload alive.
 pub fn fromPayload(comptime T: type, allocator: std.mem.Allocator, payload: *msgpack.Payload) !T {
     return fromPayloadValue(T, allocator, payload.*);
 }

@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
 
     try transport.start();
 
-    const module_uri = try fileUriFromPath(init, "example/myModule.pkl");
+    const module_uri = try pkl.Evaluator.fileUriFromPath(init.io, init.gpa, "example/myModule.pkl");
     defer init.gpa.free(module_uri);
 
     var example = Example{
@@ -201,11 +201,4 @@ fn createEvaluator(init: std.process.Init, transport: *Transport) !i64 {
         },
         else => error.UnexpectedMessage,
     };
-}
-
-fn fileUriFromPath(init: std.process.Init, path: []const u8) ![]u8 {
-    const cwd = try std.process.currentPathAlloc(init.io, init.gpa);
-    defer init.gpa.free(cwd);
-
-    return std.fmt.allocPrint(init.gpa, "file://{s}/{s}", .{ cwd, path });
 }

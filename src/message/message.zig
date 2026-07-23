@@ -350,6 +350,34 @@ test "codec toPayload uses protocol string and binary field encodings" {
     try std.testing.expectEqualStrings("module text", try module_contents.asStr());
 }
 
+test "codec toPayload protocol edge field encoding checklist" {
+    const allocator = std.testing.allocator;
+
+    var http_payload = try codec.toPayload(allocator, outgoing.Http{
+        .ca_certificates = "pem-bytes",
+    });
+    defer http_payload.free(allocator);
+    const ca_certificates = (try http_payload.mapGet("caCertificates")).?;
+    try std.testing.expect(ca_certificates == .bin);
+    try std.testing.expectEqualStrings("pem-bytes", try ca_certificates.asBin());
+
+    var evaluator_payload = try codec.toPayload(allocator, outgoing.CreateEvaluator{
+        .request_id = 9,
+        .trace_mode = "verbose",
+    });
+    defer evaluator_payload.free(allocator);
+    try std.testing.expectEqualStrings("verbose", try (try evaluator_payload.mapGet("traceMode")).?.asStr());
+
+    var error_payload = try codec.toPayload(allocator, outgoing.ReadModuleResponse{
+        .request_id = 1,
+        .evaluator_id = 2,
+        .@"error" = "boom",
+    });
+    defer error_payload.free(allocator);
+    try std.testing.expectEqualStrings("boom", try (try error_payload.mapGet("error")).?.asStr());
+    try std.testing.expect((try error_payload.mapGet("Error")) == null);
+}
+
 test "codec toPayload encodes nested CreateEvaluator fields and omits null optionals" {
     const allocator = std.testing.allocator;
 

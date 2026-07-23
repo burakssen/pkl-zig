@@ -128,8 +128,10 @@ pub fn build(b: *std.Build) void {
 
     const snippet_step = b.step("codegen-snippet-test", "Generate and compile codegen snippet fixtures");
     const snippet_output_dir = "codegen/snippet-tests/output";
+    const snippet_clean_cmd = b.addSystemCommand(&.{ "rm", "-rf", "codegen/snippet-tests/output/github.com" });
     const snippet_codegen_cmd = b.addSystemCommand(&.{ "pkl", "run", "codegen/src/gen.pkl", "--output-path", snippet_output_dir });
     snippet_codegen_cmd.stdio = .inherit;
+    snippet_codegen_cmd.step.dependOn(&snippet_clean_cmd.step);
     const snippet_inputs = [_][]const u8{
         "codegen/snippet-tests/input/Classes.pkl",
         "codegen/snippet-tests/input/CyclicModule.pkl",

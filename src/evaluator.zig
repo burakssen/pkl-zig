@@ -2,6 +2,7 @@ const std = @import("std");
 
 const message = @import("message");
 const Transport = @import("transport");
+const log = std.log.scoped(.@"pkl-zig|evaluator");
 
 const Evaluator = @This();
 
@@ -37,7 +38,14 @@ pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluat
 }
 
 pub fn deinit(self: *Evaluator) void {
-    self.transport.send(.{ .close_evaluator = .{ .evaluator_id = self.evaluator_id } }) catch {};
+    self.close() catch |err| {
+        log.warn("Failed to close evaluator {} cleanly: {}.", .{ self.evaluator_id, err });
+        self.transport.deinit();
+    };
+}
+
+pub fn close(self: *Evaluator) !void {
+    try self.transport.send(.{ .close_evaluator = .{ .evaluator_id = self.evaluator_id } });
     self.transport.deinit();
 }
 
@@ -123,11 +131,81 @@ fn nextRequestId(self: *Evaluator) i64 {
 
 pub fn fileUriFromPath(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, path, "file:")) return allocator.dupe(u8, path);
-    const cwd = try std.process.currentPathAlloc(io, allocator);
-    defer allocator.free(cwd);
-    return std.fmt.allocPrint(allocator, "file://{s}/{s}", .{ cwd, path });
+
+    const absolute_path = if (std.fs.path.isAbsolute(path))
+        try allocator.dupe(u8, path)
+    else blk: {
+        const cwd = try std.process.currentPathAlloc(io, allocator);
+        defer allocator.free(cwd);
+        break :blk try std.fs.path.join(allocator, &.{ cwd, path });
+    };
+    defer allocator.free(absolute_path);
+
+    const encoded_path = try percentEncodeFilePath(allocator, absolute_path);
+    defer allocator.free(encoded_path);
+
+    return std.fmt.allocPrint(allocator, "file://{s}", .{encoded_path});
+}
+
+fn percentEncodeFilePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var encoded = std.ArrayList(u8).empty;
+    defer encoded.deinit(allocator);
+
+    const hex = "0123456789ABCDEF";
+    for (path) |raw_ch| {
+        const ch: u8 = if (raw_ch == '\\') '/' else raw_ch;
+        if (isUnescapedPathChar(ch)) {
+            try encoded.append(allocator, ch);
+            continue;
+        }
+
+        try encoded.append(allocator, '%');
+        try encoded.append(allocator, hex[ch >> 4]);
+        try encoded.append(allocator, hex[ch & 0x0f]);
+    }
+
+    return encoded.toOwnedSlice(allocator);
+}
+
+fn isUnescapedPathChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or
+        ch == '-' or
+        ch == '_' or
+        ch == '.' or
+        ch == '~' or
+        ch == '/' or
+        ch == ':';
+}
+
+test "fileUriFromPath keeps file URI unchanged" {
+    const allocator = std.testing.allocator;
+
+    const uri = try fileUriFromPath(std.testing.io, allocator, "file:///tmp/config.pkl");
+    defer allocator.free(uri);
+
+    try std.testing.expectEqualStrings("file:///tmp/config.pkl", uri);
+}
+
+test "fileUriFromPath preserves absolute path and encodes spaces" {
+    const allocator = std.testing.allocator;
+
+    const uri = try fileUriFromPath(std.testing.io, allocator, "/tmp/My Config.pkl");
+    defer allocator.free(uri);
+
+    try std.testing.expectEqualStrings("file:///tmp/My%20Config.pkl", uri);
+}
+
+test "fileUriFromPath resolves relative path against cwd" {
+    const allocator = std.testing.allocator;
+
+    const uri = try fileUriFromPath(std.testing.io, allocator, "config/My File.pkl");
+    defer allocator.free(uri);
+
+    try std.testing.expect(std.mem.startsWith(u8, uri, "file:///"));
+    try std.testing.expect(std.mem.endsWith(u8, uri, "/config/My%20File.pkl"));
 }
 
 test {
     _ = message;
+    _ = log;
 }
