@@ -4,27 +4,63 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  unit:
+  format:
+    name: Format
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: zig fmt --check build.zig src example
-      - run: zig build test
+
+      - name: Check formatting
+        run: zig fmt --check build.zig src example
+
+  unit:
+    name: Unit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run unit tests
+        run: zig build test
 
   integration:
+    name: Integration
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
       - name: Install Pkl
         run: |
-          curl -L -o pkl https://github.com/apple/pkl/releases/download/0.31.1/pkl-linux-amd64
+          curl --fail --location \
+            --output pkl \
+            https://github.com/apple/pkl/releases/download/0.31.1/pkl-linux-amd64
           chmod +x pkl
           sudo mv pkl /usr/local/bin/pkl
-      - run: zig build integration-test
+          pkl --version
+
+      - name: Run integration tests
+        run: zig build integration-test
