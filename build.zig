@@ -8,11 +8,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
     const msgpack_mod = msgpack_dep.module("msgpack");
 
     const integration_tests = b.option(bool, "integration", "Run tests that spawn pkl server") orelse false;
-
     const test_options = b.addOptions();
     test_options.addOption(bool, "integration_tests", integration_tests);
 
@@ -24,7 +22,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "msgpack", .module = msgpack_mod },
         },
     });
-
     message_mod.addImport("message", message_mod);
     message_mod.addOptions("build_options", test_options);
 
@@ -48,9 +45,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "msgpack", .module = msgpack_mod },
         },
     });
-
     const test_step = b.step("test", "Run pkl-zig tests");
-
     inline for (&.{ message_mod, transport_mod, pkl_mod }) |mod| {
         const mod_test = b.addTest(.{ .root_module = mod });
         const mod_cmd = b.addRunArtifact(mod_test);
@@ -78,7 +73,6 @@ pub fn build(b: *std.Build) void {
     codegen_cmd.stdio = .inherit;
     const codegen_dir = codegen_cmd.addOutputDirectoryArg("codegen-example");
     codegen_cmd.addFileArg(b.path("example/codegen/AppConfig.pkl"));
-
     const appconfig_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -87,7 +81,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pkl", .module = pkl_mod },
         },
     });
-
     const codegen_example_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -102,11 +95,12 @@ pub fn build(b: *std.Build) void {
         .root_module = codegen_example_mod,
     });
     //codegen_example_exe.step.dependOn(&codegen_cmd.step);
-
     const run_codegen_example_step = b.step("run-codegen-example", "Generate and run typed config example");
     const run_codegen_example_cmd = b.addRunArtifact(codegen_example_exe);
     run_codegen_example_step.dependOn(&run_codegen_example_cmd.step);
 
+    // Integration uses a separate module graph whose build_options are forced
+    // on, then tests all public layers instead of only the message codec.
     const integration_step = b.step("integration-test", "Run tests that spawn pkl server");
     const integration_options = b.addOptions();
     integration_options.addOption(bool, "integration_tests", true);
@@ -122,9 +116,41 @@ pub fn build(b: *std.Build) void {
     integration_message_mod.addImport("message", integration_message_mod);
     integration_message_mod.addOptions("build_options", integration_options);
 
-    const integration_test = b.addTest(.{ .root_module = integration_message_mod });
-    const integration_cmd = b.addRunArtifact(integration_test);
-    integration_step.dependOn(&integration_cmd.step);
+    const integration_transport_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/transport/transport.zig"),
+        .imports = &.{
+            .{ .name = "message", .module = integration_message_mod },
+            .{ .name = "msgpack", .module = msgpack_mod },
+        },
+    });
+
+    const integration_pkl_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/pkl.zig"),
+        .imports = &.{
+            .{ .name = "message", .module = integration_message_mod },
+            .{ .name = "transport", .module = integration_transport_mod },
+            .{ .name = "msgpack", .module = msgpack_mod },
+        },
+    });
+    const integration_message_test = b.addTest(.{ .root_module = integration_message_mod });
+    const integration_message_cmd = b.addRunArtifact(integration_message_test);
+    integration_step.dependOn(&integration_message_cmd.step);
+
+    const integration_evaluator_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/integration_test.zig"),
+        .imports = &.{
+            .{ .name = "pkl", .module = integration_pkl_mod },
+        },
+    });
+    const integration_evaluator_test = b.addTest(.{ .root_module = integration_evaluator_mod });
+    const integration_evaluator_cmd = b.addRunArtifact(integration_evaluator_test);
+    integration_step.dependOn(&integration_evaluator_cmd.step);
 
     const snippet_step = b.step("codegen-snippet-test", "Generate and compile codegen snippet fixtures");
     const snippet_output_dir = "codegen/snippet-tests/output";
@@ -155,7 +181,6 @@ pub fn build(b: *std.Build) void {
     for (&snippet_inputs) |input| {
         snippet_codegen_cmd.addFileArg(b.path(input));
     }
-
     const snippet_packages = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/bugholder", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/bugholder/index.zig" },
         .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/cyclicmodule", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/cyclicmodule/index.zig" },
@@ -181,7 +206,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/union", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/union/index.zig" },
         .{ .name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/unionnamekeyword", .path = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/unionnamekeyword/index.zig" },
     };
-
     var snippet_modules: [snippet_packages.len]*std.Build.Module = undefined;
     for (&snippet_packages, 0..) |pkg, i| {
         snippet_modules[i] = b.createModule(.{
@@ -196,7 +220,6 @@ pub fn build(b: *std.Build) void {
             mod.addImport(pkg.name, snippet_modules[i]);
         }
     }
-
     const snippet_test_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -210,7 +233,6 @@ pub fn build(b: *std.Build) void {
     snippet_test.step.dependOn(&snippet_codegen_cmd.step);
     const snippet_test_cmd = b.addRunArtifact(snippet_test);
     snippet_step.dependOn(&snippet_test_cmd.step);
-
     const snippet_error_cmd = b.addSystemCommand(&.{
         "sh",
         "codegen/snippet-tests/check-errors.sh",

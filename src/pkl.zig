@@ -10,6 +10,7 @@ pub const Pair = value.Pair;
 pub const Regex = value.Regex;
 pub const Class = value.Class;
 pub const TypeAlias = value.TypeAlias;
+pub const Function = value.Function;
 pub const IntSeq = value.IntSeq;
 pub const Duration = value.Duration;
 pub const DurationUnit = value.DurationUnit;
@@ -17,3 +18,4 @@ pub const DataSize = value.DataSize;
 pub const DataSizeUnit = value.DataSizeUnit;
 
 pub const decode = value.decodeInto;
+pub const deinit = value.deinitDecoded;

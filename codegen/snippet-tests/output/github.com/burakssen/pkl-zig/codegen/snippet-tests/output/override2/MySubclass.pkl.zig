@@ -13,6 +13,10 @@ pub const MySubclass = struct {
         } else field_name;
     }
 
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        pkl.deinit(@This(), allocator, self);
+    }
+
     const field_names = [_]struct { zig: []const u8, pkl: []const u8 }{
         .{ .zig = "foo", .pkl = "foo" },
     };
