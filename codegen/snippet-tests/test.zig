@@ -29,6 +29,8 @@ test "generated snippet packages compile" {
     _ = cyclicmodule.CyclicModule;
     _ = emptyopenmodule.EmptyOpenModule;
     _ = explicitname.ExplicitlyCoolName;
+    _ = explicitname.ConfigType;
+    _ = explicitname.SomethingVeryFunny;
     _ = extendabstractclass.ExtendsAbstractClass(extendabstractclass.C);
     _ = extendmodule.ExtendModule;
     _ = extendopenclass.ExtendingOpenClass;
@@ -43,6 +45,7 @@ test "generated snippet packages compile" {
     _ = pairs.Pairs;
     _ = references.References;
     _ = union_pkg.Union;
+    _ = union_pkg.DirectoryEntry;
     _ = unionnamekeyword.UnionNameKeyword;
 }
 
@@ -62,7 +65,7 @@ test "generated enum parsers roundtrip and reject invalid values" {
 }
 
 test "generated field name mapping keeps pkl wire keys stable" {
-    try std.testing.expectEqualStrings("myProp", explicitname.ExplicitlyCoolName.pklFieldName("myprop"));
+    try std.testing.expectEqualStrings("myProp", explicitname.ExplicitlyCoolName.pklFieldName("MyCoolProp"));
     try std.testing.expectEqualStrings("propC", hiddenproperties.HiddenProperties.pklFieldName("propc"));
     try std.testing.expectEqualStrings("typeArgAliased", pairs.Pairs.pklFieldName("typeargaliased"));
     try std.testing.expectEqualStrings("myStr", moduletype.ModuleType.pklFieldName("mystr"));
@@ -78,6 +81,8 @@ test "generated types preserve important shape mappings" {
     try std.testing.expect(@TypeOf(@as(bugholder.Bug, undefined).holdsbreathfor) == pkl.Duration);
     try std.testing.expect(@TypeOf(@as(bugholder.Bug, undefined).size) == pkl.DataSize);
     try std.testing.expect(@TypeOf(@as(references.References, undefined).reference) == pkl.Reference);
+    try std.testing.expect(@TypeOf(@as(explicitname.ExplicitlyCoolName, undefined).MyCoolProp) == explicitname.SomethingVeryFunny);
+    try std.testing.expect(@TypeOf(@as(union_pkg.Union, undefined).directory) == ?[]union_pkg.DirectoryEntry);
 }
 
 test "generated pair and generic mappings are correct" {
@@ -111,4 +116,33 @@ test "generated inheritance flattening and hidden-property filtering stay stable
     try std.testing.expect(@hasField(hiddenproperties.HiddenProperties, "propc"));
     try std.testing.expect(!@hasField(hiddenproperties.HiddenProperties, "propa"));
     try std.testing.expect(!@hasField(hiddenproperties.HiddenProperties, "propb"));
+}
+
+test "generated class unions decode and deinit typed payloads" {
+    const allocator = std.testing.allocator;
+    var properties = std.StringHashMap(pkl.Value).init(allocator);
+    defer properties.deinit();
+    try properties.put("name", .{ .string = "readme.txt" });
+
+    const raw: pkl.Value = .{ .object = .{
+        .module_uri = "file:///Unions.pkl",
+        .name = "union#File",
+        .properties = properties,
+        .entries = &.{},
+        .elements = &.{},
+    } };
+
+    var decoded = try pkl.value.fromValue(union_pkg.DirectoryEntry, allocator, raw);
+    defer pkl.deinit(union_pkg.DirectoryEntry, allocator, &decoded);
+
+    switch (decoded) {
+        .file => |file| try std.testing.expectEqualStrings("readme.txt", file.name),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "generated module load helpers support evaluator reuse" {
+    try std.testing.expect(@hasDecl(union_pkg.Union, "loadFromPath"));
+    try std.testing.expect(@hasDecl(union_pkg.Union, "loadFromPathWithEvaluator"));
+    try std.testing.expect(@hasDecl(union_pkg.Union, "load"));
 }

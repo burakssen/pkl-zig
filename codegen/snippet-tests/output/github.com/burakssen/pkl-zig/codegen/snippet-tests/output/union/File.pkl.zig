@@ -5,6 +5,7 @@ const County = @import("County.pkl.zig").County;
 const AccountDisposition = @import("AccountDisposition.pkl.zig").AccountDisposition;
 const Union = @import("Union.pkl.zig").Union;
 const Directory = @import("Directory.pkl.zig").Directory;
+const DirectoryEntry = @import("DirectoryEntry.pkl.zig").DirectoryEntry;
 
 pub const File = struct {
     name: []const u8,

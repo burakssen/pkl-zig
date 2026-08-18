@@ -28,6 +28,10 @@ pub fn ExtendsAbstractClass(comptime AType: type) type { return struct {
         return evaluator.loadFromPath(@This(), path);
     }
 
+    pub fn loadFromPathWithEvaluator(evaluator: *pkl.Evaluator, path: []const u8) !@This() {
+        return evaluator.loadFromPath(@This(), path);
+    }
+
     pub fn load(evaluator: *pkl.Evaluator, module_uri: []const u8) !@This() {
         return evaluator.load(@This(), module_uri);
     }

@@ -62,10 +62,39 @@ function gatherClasses(decl: List<reflect.TypeDeclaration>): Mixin<List<ZigMappi
       })
     )
 
+local function classMappingForMember(type: reflect.Type, mappings: List<ZigMapping>): ZigMapping.Class? =
+  if (type is reflect.DeclaredType)
+    let (mapped = mappings.findOrNull((it) -> it.source == type.referent))
+      if (mapped is ZigMapping.Class) mapped else null
+  else
+    null
+local function isClassUnion(decl: reflect.TypeDeclaration, mappings: List<ZigMapping>): Boolean =
+  decl is reflect.TypeAlias
+    && let (referent = decl.referent)
+      referent is reflect.UnionType
+        && !referent.members.isEmpty
+        && referent.members.every((it) -> classMappingForMember(it, mappings) != null)
+        && referent.members
+          .map((it) -> classMappingForMember(it, mappings)!!.packageName)
+          .every((it) -> it == getPackageName(decl.enclosingDeclaration))
+        && referent.members
+          .map((it) -> utils.normalizeFieldName(classMappingForMember(it, mappings)!!.name))
+          .isDistinct
+local function gatherClassUnions(decl: List<reflect.TypeDeclaration>): Mixin<List<ZigMapping>> = (acc) ->
+  decl
+    .filter((it) -> isClassUnion(it, acc))
+    .fold(acc, (accum, it) ->
+      accum.add(new ZigMapping.Union {
+        packageName = getPackageName(it.enclosingDeclaration)
+        source = it
+        seenMappings = accum
+      })
+    )
+
 local allMappings: List<ZigMapping> =
   let (clazz = reflect.Module(moduleToGenerate).moduleClass)
   let (declarations = gatherer.gatherTypeDeclarations(clazz, List()))
-    gatherEnums(declarations) |> gatherClasses(declarations)
+    gatherEnums(declarations) |> gatherClasses(declarations) |> gatherClassUnions(declarations)
 
 local packages =
   allMappings

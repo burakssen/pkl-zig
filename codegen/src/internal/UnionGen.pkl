@@ -1,0 +1,48 @@
+@Unlisted
+module pkl.zig.internal.UnionGen
+
+extends "Gen.pkl"
+
+import "pkl:reflect"
+
+import "ZigMapping.pkl"
+import "utils.pkl"
+
+alias: reflect.TypeAlias = mapping.source as reflect.TypeAlias
+unionMapping: ZigMapping.Union = mapping as ZigMapping.Union
+contents =
+  new Listing {
+    utils.renderHeaderComment(alias.enclosingDeclaration)
+    "const std = @import(\"std\");"
+    "const pkl = @import(\"pkl\");"
+    for (member in unionMapping.members) {
+      "const \(member.typeName) = @import(\"\(member.typeName).pkl.zig\").\(member.typeName);"
+    }
+    ""
+    when (alias.docComment != null) {
+      utils.renderDocComment(alias.docComment!!, "")
+    }
+    "pub const \(unionMapping.name) = union(enum) {"
+    for (member in unionMapping.members) {
+      "    \(member.zigName): \(member.type.render(unionMapping.packageName)),"
+    }
+    ""
+    "    pub fn fromPklValue(allocator: std.mem.Allocator, value: pkl.Value) !@This() {"
+    "        const object = switch (value) {"
+    "            .object => |object| object,"
+    "            else => return error.UnsupportedType,"
+    "        };"
+    for (member in unionMapping.members) {
+      "        if (std.mem.eql(u8, object.name, \(utils.toZigString(member.pklTypeName)))) {"
+      "            return .{ .\(member.zigName) = try pkl.value.fromValue(\(member.type.render(unionMapping.packageName)), allocator, value) };"
+      "        }"
+    }
+    "        return error.UnsupportedType;"
+    "    }"
+    ""
+    "    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {"
+    "        pkl.deinit(@This(), allocator, self);"
+    "    }"
+    "};"
+    ""
+  }.join("\n")

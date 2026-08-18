@@ -6,6 +6,7 @@ import "pkl:reflect"
 import "ClassGen.pkl"
 import "EnumGen.pkl"
 import "Gen.pkl"
+import "UnionGen.pkl"
 import "ZigMapping.pkl"
 import "utils.pkl"
 
@@ -50,6 +51,8 @@ local generated: List<Gen>(hasUniqueNames()) =
   packageMappings.map((it) ->
     if (it is ZigMapping.Class)
       new ClassGen { mappings = module.mappings; mapping = it }
+    else if (it is ZigMapping.Union)
+      new UnionGen { mappings = module.mappings; mapping = it }
     else
       new EnumGen { mappings = module.mappings; mapping = it })
 

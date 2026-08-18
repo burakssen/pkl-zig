@@ -4,3 +4,4 @@ pub const AccountDisposition = @import("AccountDisposition.pkl.zig").AccountDisp
 pub const Union = @import("Union.pkl.zig").Union;
 pub const File = @import("File.pkl.zig").File;
 pub const Directory = @import("Directory.pkl.zig").Directory;
+pub const DirectoryEntry = @import("DirectoryEntry.pkl.zig").DirectoryEntry;

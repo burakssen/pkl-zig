@@ -449,6 +449,10 @@ pub fn fromValue(comptime T: type, allocator: std.mem.Allocator, value: Value) D
                 std.meta.stringToEnum(T, string) orelse DecodeError.UnsupportedType,
             else => DecodeError.UnsupportedType,
         },
+        .@"union" => if (comptime @hasDecl(T, "fromPklValue"))
+            T.fromPklValue(allocator, value)
+        else
+            DecodeError.UnsupportedType,
         else => DecodeError.UnsupportedType,
     };
 }
@@ -532,6 +536,14 @@ pub fn deinitDecoded(comptime T: type, allocator: std.mem.Allocator, value: *T) 
                 deinitDecoded(field.type, allocator, &@field(value.*, field.name));
             }
             value.* = undefined;
+        },
+        .@"union" => |union_info| {
+            if (comptime union_info.tag_type != null) {
+                switch (value.*) {
+                    inline else => |*payload| deinitDecoded(@TypeOf(payload.*), allocator, payload),
+                }
+                value.* = undefined;
+            }
         },
         else => {},
     }

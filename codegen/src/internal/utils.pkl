@@ -48,6 +48,7 @@ function toZigName(source: reflect.Declaration): String =
 
 function toZigFieldName(source: reflect.Property): String =
   source.annotations.findOrNull((it) -> it.getClass().toString() == "pkl.zig#Field")?.name
+    ?? source.annotations.findOrNull((it) -> it.getClass().toString() == "pkl.zig#Name")?.value
     ?? normalizeFieldName(source.name)
 
 function normalizePackageName(name: String): String = normalizeFieldName(name.replaceAll(".", "_"))

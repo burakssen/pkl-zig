@@ -5,6 +5,7 @@ const County = @import("County.pkl.zig").County;
 const AccountDisposition = @import("AccountDisposition.pkl.zig").AccountDisposition;
 const File = @import("File.pkl.zig").File;
 const Directory = @import("Directory.pkl.zig").Directory;
+const DirectoryEntry = @import("DirectoryEntry.pkl.zig").DirectoryEntry;
 
 pub const Union = struct {
     /// A city
@@ -15,7 +16,7 @@ pub const Union = struct {
     noodle: []const u8,
     /// Account disposition
     disposition: AccountDisposition,
-    directory: ?[]pkl.Value,
+    directory: ?[]DirectoryEntry,
 
     pub fn pklFieldName(comptime field_name: []const u8) []const u8 {
         return inline for (field_names) |entry| {
@@ -38,6 +39,10 @@ pub const Union = struct {
     pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !@This() {
         var evaluator = try pkl.Evaluator.init(io, allocator, .{});
         defer evaluator.deinit();
+        return evaluator.loadFromPath(@This(), path);
+    }
+
+    pub fn loadFromPathWithEvaluator(evaluator: *pkl.Evaluator, path: []const u8) !@This() {
         return evaluator.loadFromPath(@This(), path);
     }
 

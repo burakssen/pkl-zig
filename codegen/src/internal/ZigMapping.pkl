@@ -46,7 +46,35 @@ class Class extends ZigMapping {
   type = new Type.Declared { packageName = self.packageName; typeName = name }
 }
 
+class Union extends ZigMapping {
+  local self = this
+  alias: reflect.TypeAlias = self.source as reflect.TypeAlias
+  local union: reflect.UnionType = alias.referent as reflect.UnionType
+  name = utils.toZigName(alias)
+  names = List(name)
+  type = new Type.Declared { packageName = self.packageName; typeName = name }
+
+  members: List<UnionMember> =
+    union.members.map((it) ->
+      let (clazz = (it as reflect.DeclaredType).referent as reflect.Class)
+      let (classMapping = self.seenMappings.findOrNull((mapping) -> mapping.source == clazz)!! as ZigMapping.Class)
+        new UnionMember {
+          pklTypeName = clazz.reflectee.toString()
+          zigName = utils.normalizeFieldName(classMapping.name)
+          typeName = classMapping.name
+          type = classMapping.type
+        }
+    )
+}
+
 class EnumMember {
   pklName: String
   zigName: String
+}
+
+class UnionMember {
+  pklTypeName: String
+  zigName: String
+  typeName: String
+  type: Type
 }
