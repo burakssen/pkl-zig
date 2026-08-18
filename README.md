@@ -101,6 +101,31 @@ var evaluator = try pkl.Evaluator.init(init.io, allocator, .{
 });
 ```
 
+### Shared EvaluatorManager
+
+Use `EvaluatorManager` when multiple evaluators should share one long-lived
+`pkl server` process. Requests from different evaluators can run concurrently;
+calls on a single evaluator remain serialized.
+
+```zig
+var manager = try pkl.EvaluatorManager.init(init.io, allocator, .{});
+defer manager.deinit();
+
+var first = try manager.newEvaluator(.{});
+defer first.deinit();
+var second = try manager.newEvaluator(.{});
+defer second.deinit();
+```
+
+Closing the manager rejects new requests with `error.ManagerClosed`. Existing
+evaluator handles retain the shared runtime until they are closed or deinitialized,
+so a manager may be closed before its evaluators without leaving dangling
+transport pointers.
+
+Evaluator options also accept an optional evaluator-scoped `pkl.Logger` callback
+for Pkl evaluation logs. Logger callbacks run on the shared dispatcher and must
+not block or synchronously re-enter an evaluator that uses the same runtime.
+
 ## Low-Level Transport
 
 Use `pkl.Transport` directly when request IDs, evaluator IDs, response routing,
@@ -215,6 +240,12 @@ Outgoing frames queued through `Transport.send` are copied into owned bytes and
 freed by the transport after writing, or during `Transport.deinit` if still
 queued.
 
+In-process module and resource reader callbacks receive a request-scoped
+allocator. Memory returned from `read` or `list_elements` may be allocated with
+that allocator and must not be freed by the callback; it is released after the
+response has been encoded into the transport's owned frame. Reader and logger
+callback contexts remain borrowed and must outlive their evaluator.
+
 ## Tests
 
 ```sh
@@ -236,7 +267,7 @@ class-union decoding and evaluator-reusing load helpers against `pkl server`.
 
 ## Status
 
-The evaluator helper covers simple load and evaluate flows. Advanced request
-routing, custom readers, and custom resource handling still require the
-low-level transport. Codegen is experimental and currently supports a focused
-subset of Pkl types.
+The evaluator runtime supports shared-process request routing, in-process module
+and resource readers, evaluator-scoped logging, and safe manager/evaluator
+lifetimes. Calls on one evaluator remain intentionally serialized. Codegen is
+experimental and currently supports a focused subset of Pkl types.

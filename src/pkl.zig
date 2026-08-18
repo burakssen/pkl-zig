@@ -5,6 +5,7 @@ pub const manager = @import("manager.zig");
 pub const EvaluatorManager = manager.EvaluatorManager;
 pub const ResourceReader = Evaluator.ResourceReader;
 pub const ModuleReader = Evaluator.ModuleReader;
+pub const Logger = Evaluator.Logger;
 pub const PathElement = message.outgoing.PathElement;
 pub const project = @import("project.zig");
 pub const Project = project.Project;

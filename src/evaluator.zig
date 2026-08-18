@@ -1,34 +1,17 @@
 const std = @import("std");
 
 const message = @import("message");
-const incoming = message.incoming;
 const outgoing = message.outgoing;
 const Transport = @import("transport");
+const Runtime = @import("runtime.zig");
 const value = @import("value.zig");
 const log = std.log.scoped(.@"pkl-zig|evaluator");
 
 const Evaluator = @This();
 
-// Simple function-pointer vtables instead of dynamic interface abstractions.
-
-pub const ResourceReader = struct {
-    scheme: []const u8,
-    has_hierarchical_uris: bool = false,
-    is_globbable: bool = false,
-    read: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const u8,
-    list_elements: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const outgoing.PathElement = null,
-    context: ?*anyopaque = null,
-};
-
-pub const ModuleReader = struct {
-    scheme: []const u8,
-    has_hierarchical_uris: bool = false,
-    is_globbable: bool = false,
-    is_local: bool = false,
-    read: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const u8,
-    list_elements: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const outgoing.PathElement = null,
-    context: ?*anyopaque = null,
-};
+pub const ResourceReader = Runtime.ResourceReader;
+pub const ModuleReader = Runtime.ModuleReader;
+pub const Logger = Runtime.Logger;
 
 pub const Options = struct {
     pkl_argv: []const []const u8 = &.{ "pkl", "server" },
@@ -65,6 +48,7 @@ pub const Options = struct {
     external_resource_readers: ?std.StringHashMap(outgoing.ExternalReader) = null,
     resource_readers: ?[]const ResourceReader = null,
     module_readers: ?[]const ModuleReader = null,
+    logger: ?Logger = null,
     trace_mode: ?[]const u8 = null,
 
     /// A conservative preset for evaluating content that should not be able to
@@ -79,43 +63,21 @@ pub const Options = struct {
 
 io: std.Io,
 allocator: std.mem.Allocator,
-transport: ?*Transport,
-owns_transport: bool = true,
+runtime: ?*Runtime,
 evaluator_id: i64,
-next_request_id: i64,
-resource_readers: []const ResourceReader = &.{},
-module_readers: []const ModuleReader = &.{},
-request_mutex: ?*std.Io.Mutex = null,
 local_mutex: std.Io.Mutex = .init,
+closed: bool = false,
 last_error: ?[]u8 = null,
 
-fn mutex(self: *Evaluator) *std.Io.Mutex {
-    return self.request_mutex orelse &self.local_mutex;
-}
-
 pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluator {
-    const transport = try Transport.initWithOptions(io, allocator, .{ .pkl_argv = options.pkl_argv });
-    errdefer transport.deinit();
-
-    try transport.start();
-
-    var self = Evaluator{
-        .io = io,
-        .allocator = allocator,
-        .transport = transport,
-        .owns_transport = true,
-        .evaluator_id = 0,
-        .next_request_id = 1,
-        .resource_readers = options.resource_readers orelse &.{},
-        .module_readers = options.module_readers orelse &.{},
-        .request_mutex = null,
-    };
-    errdefer self.clearLastErrorUnlocked();
-
-    self.evaluator_id = try self.createUnlocked(options);
-    return self;
+    const runtime = try Runtime.init(io, allocator, .{ .pkl_argv = options.pkl_argv });
+    return initWithOwnedRuntime(io, allocator, runtime, options);
 }
 
+/// Compatibility entry point for callers that already own a started Transport.
+/// The evaluator owns the dispatcher wrapper, but not the transport itself.
+/// Sharing one Transport between evaluators now requires EvaluatorManager so
+/// there is exactly one receive dispatcher for that process.
 pub fn initWithTransport(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -123,20 +85,47 @@ pub fn initWithTransport(
     shared_mutex: ?*std.Io.Mutex,
     options: Options,
 ) !Evaluator {
+    if (shared_mutex != null) return error.SharedTransportRequiresManager;
+    const runtime = try Runtime.initWithStartedTransport(io, allocator, transport, false);
+    return initWithOwnedRuntime(io, allocator, runtime, options);
+}
+
+/// Consumes one retained runtime reference. EvaluatorManager uses this to
+/// create independent evaluator handles on its shared pkl server process.
+pub fn initWithRuntime(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    runtime: *Runtime,
+    options: Options,
+) !Evaluator {
+    return initWithOwnedRuntime(io, allocator, runtime, options);
+}
+
+fn initWithOwnedRuntime(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    runtime: *Runtime,
+    options: Options,
+) !Evaluator {
     var self = Evaluator{
         .io = io,
         .allocator = allocator,
-        .transport = transport,
-        .owns_transport = false,
+        .runtime = runtime,
         .evaluator_id = 0,
-        .next_request_id = 1,
-        .resource_readers = options.resource_readers orelse &.{},
-        .module_readers = options.module_readers orelse &.{},
-        .request_mutex = shared_mutex,
     };
+    errdefer runtime.release();
     errdefer self.clearLastErrorUnlocked();
 
     self.evaluator_id = try self.createUnlocked(options);
+    errdefer runtime.sendAndFlush(.{
+        .close_evaluator = .{ .evaluator_id = self.evaluator_id },
+    }) catch {};
+
+    try runtime.registerEvaluator(self.evaluator_id, .{
+        .resource_readers = options.resource_readers orelse &.{},
+        .module_readers = options.module_readers orelse &.{},
+        .logger = options.logger,
+    });
     return self;
 }
 
@@ -148,20 +137,22 @@ pub fn deinit(self: *Evaluator) void {
     self.clearLastErrorUnlocked();
 }
 
-/// Send Pkl's one-way CloseEvaluator message and wait until the transport's
-/// writer has written that frame before tearing down the child process.
+/// Close this evaluator. Manager shutdown may happen first; the evaluator keeps
+/// the shared runtime alive long enough to send its CloseEvaluator frame safely,
+/// then releases that runtime reference immediately.
 pub fn close(self: *Evaluator) !void {
-    try self.mutex().lock(self.io);
-    defer self.mutex().unlock(self.io);
+    try self.local_mutex.lock(self.io);
+    defer self.local_mutex.unlock(self.io);
 
-    const transport = self.transport orelse return;
+    if (self.closed) return;
+    self.closed = true;
 
-    // Make the state closed before doing any fallible work. Even when flushing
-    // the close frame fails, no later operation may dereference this transport.
-    self.transport = null;
-    defer if (self.owns_transport) transport.deinit();
+    const runtime = self.runtime orelse return;
+    self.runtime = null;
+    defer runtime.release();
 
-    try transport.sendAndFlush(.{
+    runtime.unregisterEvaluator(self.evaluator_id);
+    try runtime.sendAndFlush(.{
         .close_evaluator = .{ .evaluator_id = self.evaluator_id },
     });
 }
@@ -176,74 +167,43 @@ pub fn evaluateModuleRaw(self: *Evaluator, module_uri: []const u8) ![]u8 {
     return self.evaluateExpressionRaw(module_uri, null);
 }
 
-/// Evaluations are intentionally serialized. The message-passing protocol
-/// permits multiple in-flight request IDs, but a shared receive queue requires
-/// a dispatcher to support that safely. Serializing here prevents one caller
-/// from consuming and destroying another caller's response.
+/// Calls on one evaluator remain serialized so lastError and evaluator-local
+/// state stay simple. Different evaluators sharing a manager may execute
+/// concurrently because Runtime dispatches responses by request ID.
 pub fn evaluateExpressionRaw(
     self: *Evaluator,
     module_uri: []const u8,
     expr: ?[]const u8,
 ) ![]u8 {
-    try self.mutex().lock(self.io);
-    defer self.mutex().unlock(self.io);
+    try self.local_mutex.lock(self.io);
+    defer self.local_mutex.unlock(self.io);
 
+    if (self.closed) return error.EvaluatorClosed;
     self.clearLastErrorUnlocked();
-    const transport = self.transport orelse return error.EvaluatorClosed;
-    const request_id = self.nextRequestIdUnlocked();
+    const runtime = self.runtime orelse return error.EvaluatorClosed;
+    const request_id = try runtime.nextRequestId();
 
-    try transport.send(.{ .evaluate = .{
+    var envelope = try runtime.request(request_id, .{ .evaluate = .{
         .request_id = request_id,
         .evaluator_id = self.evaluator_id,
         .module_uri = module_uri,
         .expr = expr,
     } });
+    defer envelope.deinit(self.allocator);
 
-    while (true) {
-        var envelope = try transport.recv();
-        defer envelope.deinit(self.allocator);
-
-        switch (envelope.msg) {
-            .evaluate_response => |response| {
-                if (response.request_id != request_id) return error.UnexpectedResponseId;
-                if (response.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-
-                if (response.@"error") |diagnostic| {
-                    try self.setLastErrorUnlocked(diagnostic);
-                    return error.EvaluateFailed;
-                }
-
-                const result = response.result orelse return error.MissingEvaluateResult;
-                return self.allocator.dupe(u8, result);
-            },
-            .log => |entry| {
-                if (entry.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-                switch (entry.level) {
-                    0 => log.debug("Pkl: {s} ({s})", .{ entry.message, entry.frame_uri }),
-                    1 => log.warn("Pkl: {s} ({s})", .{ entry.message, entry.frame_uri }),
-                    else => log.info("Pkl: {s} ({s})", .{ entry.message, entry.frame_uri }),
-                }
-            },
-            .read_resource => |req| {
-                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-                try self.handleReadResource(transport, req);
-            },
-            .read_module => |req| {
-                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-                try self.handleReadModule(transport, req);
-            },
-            .list_resources => |req| {
-                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-                try self.handleListResources(transport, req);
-            },
-            .list_modules => |req| {
-                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
-                try self.handleListModules(transport, req);
-            },
-            .close_external_process => return error.ExternalProcessClosed,
-            else => return error.UnexpectedMessage,
-        }
-    }
+    return switch (envelope.msg) {
+        .evaluate_response => |response| blk: {
+            if (response.request_id != request_id) return error.UnexpectedResponseId;
+            if (response.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
+            if (response.@"error") |diagnostic| {
+                try self.setLastErrorUnlocked(diagnostic);
+                return error.EvaluateFailed;
+            }
+            const result = response.result orelse return error.MissingEvaluateResult;
+            break :blk try self.allocator.dupe(u8, result);
+        },
+        else => error.UnexpectedMessage,
+    };
 }
 
 pub fn loadFromPath(
@@ -263,43 +223,40 @@ pub fn load(self: *Evaluator, comptime T: type, module_uri: []const u8) !T {
 }
 
 fn createUnlocked(self: *Evaluator, options: Options) !i64 {
-    try self.mutex().lock(self.io);
-    defer self.mutex().unlock(self.io);
-
     self.clearLastErrorUnlocked();
-    const transport = self.transport orelse return error.EvaluatorClosed;
-    const request_id = self.nextRequestIdUnlocked();
+    const runtime = self.runtime orelse return error.EvaluatorClosed;
+    const request_id = try runtime.nextRequestId();
 
     var client_resource_readers: ?[]outgoing.ResourceReader = null;
     if (options.resource_readers) |readers| {
         const out_readers = try self.allocator.alloc(outgoing.ResourceReader, readers.len);
-        for (readers, 0..) |r, i| {
-            out_readers[i] = .{
-                .scheme = r.scheme,
-                .has_hierarchical_uris = r.has_hierarchical_uris,
-                .is_globbable = r.is_globbable,
+        for (readers, 0..) |reader, index| {
+            out_readers[index] = .{
+                .scheme = reader.scheme,
+                .has_hierarchical_uris = reader.has_hierarchical_uris,
+                .is_globbable = reader.is_globbable,
             };
         }
         client_resource_readers = out_readers;
     }
-    defer if (client_resource_readers) |r| self.allocator.free(r);
+    defer if (client_resource_readers) |readers| self.allocator.free(readers);
 
     var client_module_readers: ?[]outgoing.ModuleReader = null;
     if (options.module_readers) |readers| {
         const out_readers = try self.allocator.alloc(outgoing.ModuleReader, readers.len);
-        for (readers, 0..) |r, i| {
-            out_readers[i] = .{
-                .scheme = r.scheme,
-                .has_hierarchical_uris = r.has_hierarchical_uris,
-                .is_globbable = r.is_globbable,
-                .is_local = r.is_local,
+        for (readers, 0..) |reader, index| {
+            out_readers[index] = .{
+                .scheme = reader.scheme,
+                .has_hierarchical_uris = reader.has_hierarchical_uris,
+                .is_globbable = reader.is_globbable,
+                .is_local = reader.is_local,
             };
         }
         client_module_readers = out_readers;
     }
-    defer if (client_module_readers) |r| self.allocator.free(r);
+    defer if (client_module_readers) |readers| self.allocator.free(readers);
 
-    try transport.send(.{ .create_evaluator = .{
+    var envelope = try runtime.request(request_id, .{ .create_evaluator = .{
         .request_id = request_id,
         .client_resource_readers = client_resource_readers,
         .client_module_readers = client_module_readers,
@@ -318,175 +275,19 @@ fn createUnlocked(self: *Evaluator, options: Options) !i64 {
         .external_resource_readers = options.external_resource_readers,
         .trace_mode = options.trace_mode,
     } });
+    defer envelope.deinit(self.allocator);
 
-    while (true) {
-        var envelope = try transport.recv();
-        defer envelope.deinit(self.allocator);
-
-        switch (envelope.msg) {
-            .create_evaluator_response => |response| {
-                if (response.request_id != request_id) return error.UnexpectedResponseId;
-
-                if (response.@"error") |diagnostic| {
-                    try self.setLastErrorUnlocked(diagnostic);
-                    return error.CreateEvaluatorFailed;
-                }
-
-                return response.evaluator_id orelse error.MissingEvaluatorId;
-            },
-            .log => {},
-            .close_external_process => return error.ExternalProcessClosed,
-            else => return error.UnexpectedMessage,
-        }
-    }
-}
-
-fn uriScheme(uri: []const u8) ?[]const u8 {
-    const idx = std.mem.indexOfScalar(u8, uri, ':') orelse return null;
-    return uri[0..idx];
-}
-
-fn findResourceReader(self: *const Evaluator, uri: []const u8) ?ResourceReader {
-    const scheme = uriScheme(uri) orelse return null;
-    for (self.resource_readers) |reader| {
-        if (std.mem.eql(u8, reader.scheme, scheme)) return reader;
-    }
-    return null;
-}
-
-fn findModuleReader(self: *const Evaluator, uri: []const u8) ?ModuleReader {
-    const scheme = uriScheme(uri) orelse return null;
-    for (self.module_readers) |reader| {
-        if (std.mem.eql(u8, reader.scheme, scheme)) return reader;
-    }
-    return null;
-}
-
-fn handleReadResource(self: *Evaluator, transport: *Transport, req: incoming.ReadResource) !void {
-    const reader = self.findResourceReader(req.uri) orelse {
-        try transport.send(.{ .read_resource_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "No resource reader registered for URI scheme",
-        } });
-        return;
+    return switch (envelope.msg) {
+        .create_evaluator_response => |response| blk: {
+            if (response.request_id != request_id) return error.UnexpectedResponseId;
+            if (response.@"error") |diagnostic| {
+                try self.setLastErrorUnlocked(diagnostic);
+                return error.CreateEvaluatorFailed;
+            }
+            break :blk response.evaluator_id orelse error.MissingEvaluatorId;
+        },
+        else => error.UnexpectedMessage,
     };
-
-    if (reader.read(reader.context, self.allocator, req.uri)) |contents| {
-        try transport.send(.{ .read_resource_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .contents = contents,
-        } });
-    } else |err| {
-        try transport.send(.{ .read_resource_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = @errorName(err),
-        } });
-    }
-}
-
-fn handleReadModule(self: *Evaluator, transport: *Transport, req: incoming.ReadModule) !void {
-    const reader = self.findModuleReader(req.uri) orelse {
-        try transport.send(.{ .read_module_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "No module reader registered for URI scheme",
-        } });
-        return;
-    };
-
-    if (reader.read(reader.context, self.allocator, req.uri)) |contents| {
-        try transport.send(.{ .read_module_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .contents = contents,
-        } });
-    } else |err| {
-        try transport.send(.{ .read_module_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = @errorName(err),
-        } });
-    }
-}
-
-fn handleListResources(self: *Evaluator, transport: *Transport, req: incoming.ListResources) !void {
-    const reader = self.findResourceReader(req.uri) orelse {
-        try transport.send(.{ .list_resources_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "No resource reader registered for URI scheme",
-        } });
-        return;
-    };
-
-    const list_fn = reader.list_elements orelse {
-        try transport.send(.{ .list_resources_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "Resource reader does not support listing elements",
-        } });
-        return;
-    };
-
-    if (list_fn(reader.context, self.allocator, req.uri)) |elements| {
-        try transport.send(.{ .list_resources_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .path_elements = elements,
-        } });
-    } else |err| {
-        try transport.send(.{ .list_resources_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = @errorName(err),
-        } });
-    }
-}
-
-fn handleListModules(self: *Evaluator, transport: *Transport, req: incoming.ListModules) !void {
-    const reader = self.findModuleReader(req.uri) orelse {
-        try transport.send(.{ .list_modules_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "No module reader registered for URI scheme",
-        } });
-        return;
-    };
-
-    const list_fn = reader.list_elements orelse {
-        try transport.send(.{ .list_modules_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = "Module reader does not support listing elements",
-        } });
-        return;
-    };
-
-    if (list_fn(reader.context, self.allocator, req.uri)) |elements| {
-        try transport.send(.{ .list_modules_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .path_elements = elements,
-        } });
-    } else |err| {
-        try transport.send(.{ .list_modules_response = .{
-            .request_id = req.request_id,
-            .evaluator_id = self.evaluator_id,
-            .@"error" = @errorName(err),
-        } });
-    }
-}
-
-fn nextRequestIdUnlocked(self: *Evaluator) i64 {
-    const request_id = self.next_request_id;
-    self.next_request_id = if (self.next_request_id == std.math.maxInt(i64))
-        1
-    else
-        self.next_request_id + 1;
-    return request_id;
 }
 
 fn clearLastErrorUnlocked(self: *Evaluator) void {

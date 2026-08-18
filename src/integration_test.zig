@@ -300,3 +300,143 @@ test "EvaluatorManager evaluates PklProject" {
     defer pkl.deinit([]const u8, allocator, &result);
     try std.testing.expectEqualStrings("from-module-path:from-project", result);
 }
+
+fn allocatingResourceRead(
+    _: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+) anyerror![]const u8 {
+    if (!std.mem.eql(u8, uri, "ownedres:data.txt")) return error.FileNotFound;
+    return allocator.dupe(u8, "allocated by reader");
+}
+
+test "in-process reader allocations are request scoped" {
+    const allocator = std.testing.allocator;
+    const reader = pkl.ResourceReader{
+        .scheme = "ownedres",
+        .read = allocatingResourceRead,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_resources = &.{ "ownedres:", "pkl:" },
+        .resource_readers = &.{reader},
+    });
+    defer evaluator.deinit();
+
+    const raw = try evaluator.evaluateExpressionRaw(
+        "pkl:base",
+        "read(\"ownedres:data.txt\").text",
+    );
+    defer allocator.free(raw);
+    var text = try pkl.decode([]const u8, allocator, raw);
+    defer pkl.deinit([]const u8, allocator, &text);
+    try std.testing.expectEqualStrings("allocated by reader", text);
+}
+
+test "manager close invalidates retained evaluator safely" {
+    const allocator = std.testing.allocator;
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+
+    var evaluator = try manager.newEvaluator(.{});
+    defer evaluator.deinit();
+
+    manager.close();
+    try std.testing.expectError(
+        error.ManagerClosed,
+        evaluator.evaluateExpressionRaw("pkl:base", "1 + 1"),
+    );
+    try std.testing.expectError(error.ManagerClosed, manager.newEvaluator(.{}));
+}
+
+const LogCapture = struct {
+    seen: bool = false,
+    level: i32 = -1,
+};
+
+fn captureLog(
+    context: ?*anyopaque,
+    level: i32,
+    _: []const u8,
+    _: []const u8,
+) void {
+    const capture: *LogCapture = @ptrCast(@alignCast(context.?));
+    capture.seen = true;
+    capture.level = level;
+}
+
+test "evaluator logger receives trace messages" {
+    const allocator = std.testing.allocator;
+    var capture = LogCapture{};
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .logger = .{
+            .context = &capture,
+            .write = captureLog,
+        },
+    });
+    defer evaluator.deinit();
+
+    const raw = try evaluator.evaluateExpressionRaw("pkl:base", "trace(40 + 2)");
+    defer allocator.free(raw);
+    const result = try pkl.decode(i64, allocator, raw);
+
+    try std.testing.expectEqual(@as(i64, 42), result);
+    try std.testing.expect(capture.seen);
+    try std.testing.expectEqual(@as(i32, 0), capture.level);
+}
+
+const AsyncEvaluation = union(enum) {
+    value: i64,
+    failure: anyerror,
+};
+
+fn evaluateAsync(
+    evaluator: *pkl.Evaluator,
+    expression: []const u8,
+    results: *std.Io.Queue(AsyncEvaluation),
+) void {
+    const allocator = std.testing.allocator;
+    const raw = evaluator.evaluateExpressionRaw("pkl:base", expression) catch |err| {
+        results.putOne(std.testing.io, .{ .failure = err }) catch {};
+        return;
+    };
+    defer allocator.free(raw);
+
+    const decoded = pkl.decode(i64, allocator, raw) catch |err| {
+        results.putOne(std.testing.io, .{ .failure = err }) catch {};
+        return;
+    };
+    results.putOne(std.testing.io, .{ .value = decoded }) catch {};
+}
+
+fn expectAsyncValue(results: *std.Io.Queue(AsyncEvaluation), expected: i64) !void {
+    const result = try results.getOne(std.testing.io);
+    switch (result) {
+        .value => |number| try std.testing.expectEqual(expected, number),
+        .failure => |err| return err,
+    }
+}
+
+test "manager routes concurrent evaluator responses by request id" {
+    const allocator = std.testing.allocator;
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+
+    var first = try manager.newEvaluator(.{});
+    defer first.deinit();
+    var second = try manager.newEvaluator(.{});
+    defer second.deinit();
+
+    var first_buffer: [1]AsyncEvaluation = undefined;
+    var first_results: std.Io.Queue(AsyncEvaluation) = .init(&first_buffer);
+    var second_buffer: [1]AsyncEvaluation = undefined;
+    var second_results: std.Io.Queue(AsyncEvaluation) = .init(&second_buffer);
+    var group: std.Io.Group = .init;
+    defer group.cancel(std.testing.io);
+
+    group.async(std.testing.io, evaluateAsync, .{ &first, "20 + 22", &first_results });
+    group.async(std.testing.io, evaluateAsync, .{ &second, "9 * 11", &second_results });
+
+    try expectAsyncValue(&first_results, 42);
+    try expectAsyncValue(&second_results, 99);
+}
