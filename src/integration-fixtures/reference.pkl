@@ -1,0 +1,13 @@
+import "pkl:ref"
+
+class Domain extends ref.Domain {
+  function renderReference(reference: ref.Reference<Domain, Any>): String =
+    reference.getData().toString()
+}
+
+class Thing {
+  name: String
+}
+
+root = ref.Reference(new Domain {}, Thing, "thing")
+nested = root.name

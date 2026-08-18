@@ -2,6 +2,7 @@ const std = @import("std");
 const msgpack = @import("msgpack");
 
 pub const DecodeError = anyerror;
+pub const CloneError = std.mem.Allocator.Error;
 
 const code_object = 0x01;
 const code_map = 0x02;
@@ -51,7 +52,7 @@ pub const Object = struct {
         self.* = undefined;
     }
 
-    pub fn clone(self: Object, allocator: std.mem.Allocator) !Object {
+    pub fn clone(self: Object, allocator: std.mem.Allocator) CloneError!Object {
         var result = blk: {
             const module_uri = if (self.module_uri.len == 0)
                 ""
@@ -105,7 +106,7 @@ pub const Entry = struct {
         self.* = undefined;
     }
 
-    pub fn clone(self: Entry, allocator: std.mem.Allocator) !Entry {
+    pub fn clone(self: Entry, allocator: std.mem.Allocator) CloneError!Entry {
         var key = try self.key.clone(allocator);
         errdefer key.deinit(allocator);
 
@@ -161,7 +162,7 @@ pub const Reference = struct {
         self.* = undefined;
     }
 
-    pub fn clone(self: Reference, allocator: std.mem.Allocator) !Reference {
+    pub fn clone(self: Reference, allocator: std.mem.Allocator) CloneError!Reference {
         const domain = try allocator.create(Value);
         errdefer allocator.destroy(domain);
         domain.* = try self.domain.clone(allocator);
@@ -297,7 +298,7 @@ pub const Value = union(enum) {
 
     /// Deep-copy an owning Value. The returned value can be deinitialized
     /// independently of the source with the same allocator.
-    pub fn clone(self: Value, allocator: std.mem.Allocator) !Value {
+    pub fn clone(self: Value, allocator: std.mem.Allocator) CloneError!Value {
         return switch (self) {
             .null => .null,
             .bool => |value| .{ .bool = value },
@@ -1011,12 +1012,12 @@ fn decodeTypeAlias(
     return .{ .type_alias = .{ .name = name, .module_uri = module_uri } };
 }
 
-fn cloneBytes(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
+fn cloneBytes(allocator: std.mem.Allocator, source: []const u8) CloneError![]const u8 {
     if (source.len == 0) return "";
     return allocator.dupe(u8, source);
 }
 
-fn cloneClass(allocator: std.mem.Allocator, source: Class) !Class {
+fn cloneClass(allocator: std.mem.Allocator, source: Class) CloneError!Class {
     const module_uri = try cloneBytes(allocator, source.module_uri);
     errdefer if (module_uri.len != 0) allocator.free(module_uri);
 
@@ -1024,7 +1025,7 @@ fn cloneClass(allocator: std.mem.Allocator, source: Class) !Class {
     return .{ .module_uri = module_uri, .name = name };
 }
 
-fn cloneTypeAlias(allocator: std.mem.Allocator, source: TypeAlias) !TypeAlias {
+fn cloneTypeAlias(allocator: std.mem.Allocator, source: TypeAlias) CloneError!TypeAlias {
     const module_uri = try cloneBytes(allocator, source.module_uri);
     errdefer if (module_uri.len != 0) allocator.free(module_uri);
 
@@ -1042,7 +1043,7 @@ fn deinitTypeAlias(allocator: std.mem.Allocator, value: TypeAlias) void {
     if (value.name.len != 0) allocator.free(value.name);
 }
 
-fn cloneValues(allocator: std.mem.Allocator, source: []const Value) ![]Value {
+fn cloneValues(allocator: std.mem.Allocator, source: []const Value) CloneError![]Value {
     if (source.len == 0) return &.{};
 
     const result = try allocator.alloc(Value, source.len);
@@ -1059,7 +1060,7 @@ fn cloneValues(allocator: std.mem.Allocator, source: []const Value) ![]Value {
     return result;
 }
 
-fn cloneEntries(allocator: std.mem.Allocator, source: []const Entry) ![]Entry {
+fn cloneEntries(allocator: std.mem.Allocator, source: []const Entry) CloneError![]Entry {
     if (source.len == 0) return &.{};
 
     const result = try allocator.alloc(Entry, source.len);
@@ -1079,7 +1080,7 @@ fn cloneEntries(allocator: std.mem.Allocator, source: []const Entry) ![]Entry {
 fn clonePair(
     allocator: std.mem.Allocator,
     source: Pair(*Value, *Value),
-) !Pair(*Value, *Value) {
+) CloneError!Pair(*Value, *Value) {
     const first = try allocator.create(Value);
     errdefer allocator.destroy(first);
     first.* = try source.first.clone(allocator);

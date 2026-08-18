@@ -17,6 +17,7 @@ const override_pkg = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests
 const override2 = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/override2");
 const import_pkg = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/import");
 const pairs = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/pairs");
+const references = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/references");
 const support_lib = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib");
 const support_lib2 = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib2");
 const support_lib3 = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib3");
@@ -40,6 +41,7 @@ test "generated snippet packages compile" {
     _ = override2.Override2;
     _ = import_pkg.PackageNameKeyword;
     _ = pairs.Pairs;
+    _ = references.References;
     _ = union_pkg.Union;
     _ = unionnamekeyword.UnionNameKeyword;
 }
@@ -75,6 +77,7 @@ test "generated types preserve important shape mappings" {
     try std.testing.expect(@TypeOf(@as(bugholder.Bug, undefined).kind4) == []const u8);
     try std.testing.expect(@TypeOf(@as(bugholder.Bug, undefined).holdsbreathfor) == pkl.Duration);
     try std.testing.expect(@TypeOf(@as(bugholder.Bug, undefined).size) == pkl.DataSize);
+    try std.testing.expect(@TypeOf(@as(references.References, undefined).reference) == pkl.Reference);
 }
 
 test "generated pair and generic mappings are correct" {

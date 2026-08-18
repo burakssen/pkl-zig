@@ -1,0 +1,7 @@
+@zig.Package { name = "github.com/burakssen/pkl-zig/codegen/snippet-tests/output/references" }
+module References
+
+import ".../src/zig.pkl"
+import "pkl:ref"
+
+reference: ref.Reference<ref.Domain, String>

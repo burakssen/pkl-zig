@@ -10,8 +10,26 @@ const Evaluator = @This();
 
 pub const Options = struct {
     pkl_argv: []const []const u8 = &.{ "pkl", "server" },
-    allowed_modules: ?[]const []const u8 = &.{ "pkl:", "repl:", "file:", "package:", "projectpackage:", "https:" },
-    allowed_resources: ?[]const []const u8 = &.{ "file:", "package:", "projectpackage:", "https:" },
+    allowed_modules: ?[]const []const u8 = &.{
+        "pkl:",
+        "repl:",
+        "file:",
+        "http:",
+        "https:",
+        "modulepath:",
+        "package:",
+        "projectpackage:",
+    },
+    allowed_resources: ?[]const []const u8 = &.{
+        "http:",
+        "https:",
+        "file:",
+        "env:",
+        "prop:",
+        "modulepath:",
+        "package:",
+        "projectpackage:",
+    },
     module_paths: ?[]const []const u8 = null,
     env: ?std.StringHashMap([]const u8) = null,
     properties: ?std.StringHashMap([]const u8) = null,

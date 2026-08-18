@@ -1,0 +1,10 @@
+amends "pkl:Project"
+
+evaluatorSettings {
+  modulePath {
+    "modules"
+  }
+  externalProperties {
+    ["projectValue"] = "from-project"
+  }
+}
