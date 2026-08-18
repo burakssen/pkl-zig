@@ -25,6 +25,14 @@ pub const EvaluatorManager = struct {
         };
     }
 
+    /// Start the shared server using the same `PKL_EXEC` resolution as
+    /// `Evaluator.initPreconfigured`.
+    pub fn initPreconfigured(io: std.Io, allocator: std.mem.Allocator) !EvaluatorManager {
+        var evaluator_options = try Evaluator.OptionsBuilder.preconfigured(allocator);
+        defer evaluator_options.deinit();
+        return init(io, allocator, .{ .pkl_argv = evaluator_options.build().pkl_argv });
+    }
+
     pub fn deinit(self: *EvaluatorManager) void {
         self.close();
     }
@@ -57,6 +65,14 @@ pub const EvaluatorManager = struct {
         // initWithRuntime consumes the retained reference on both success and
         // failure, so no manager-side errdefer is needed here.
         return Evaluator.initWithRuntime(self.io, self.allocator, runtime, options);
+    }
+
+    /// Create an evaluator with process environment and cache defaults. The
+    /// manager's server process has already been resolved by manager init.
+    pub fn newPreconfiguredEvaluator(self: *EvaluatorManager) !Evaluator {
+        var options = try Evaluator.OptionsBuilder.preconfigured(self.allocator);
+        defer options.deinit();
+        return self.newEvaluator(options.build());
     }
 
     pub fn newProjectEvaluator(

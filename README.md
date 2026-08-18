@@ -88,6 +88,36 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
+Evaluators also accept in-memory Pkl source through `pkl.ModuleSource`. Every
+source still carries a URI (`fromText` uses `repl:text`) so imports and
+diagnostics retain well-defined source identity:
+
+```zig
+const Config = struct {
+    name: []const u8,
+    port: i64,
+};
+
+var config = try evaluator.evaluateModule(Config, pkl.ModuleSource.fromText(
+    \\name = "api"
+    \\port = 8080
+));
+defer pkl.deinit(Config, allocator, &config);
+```
+
+The high-level API also evaluates Pkl's standard output properties directly:
+
+```zig
+var text = try evaluator.evaluateOutputText(pkl.ModuleSource.fromUri("file:///config.pkl"));
+defer pkl.deinit([]const u8, allocator, &text);
+
+var files = try evaluator.evaluateOutputFiles(pkl.ModuleSource.fromUri("file:///config.pkl"));
+defer files.deinit();
+```
+
+`evaluateOutputBytes` and `evaluateOutputFilesBytes` preserve binary output,
+and `evaluateOutputValue(T, source)` decodes `output.value` directly into `T`.
+
 Use `Evaluator.Options` when the `pkl` executable is not on `PATH`, module or
 resource permissions need to be restricted, or extra module search paths are
 needed:
@@ -100,6 +130,33 @@ var evaluator = try pkl.Evaluator.init(init.io, allocator, .{
     .module_paths = &.{ "config" },
 });
 ```
+
+For normal application defaults, `Evaluator.initPreconfigured` captures the
+current process environment, uses `$HOME/.pkl/cache` (or the Windows home
+directory equivalent), and honors `PKL_EXEC` before falling back to `pkl` on
+`PATH`:
+
+```zig
+var evaluator = try pkl.Evaluator.initPreconfigured(init.io, allocator);
+defer evaluator.deinit();
+```
+
+Use `pkl.EvaluatorOptionsBuilder` when preconfigured/owned option storage or
+in-process readers are needed. Adding a reader automatically adds its escaped
+URI scheme to the corresponding allow list, so reader registration is one
+operation instead of two:
+
+```zig
+var options = try pkl.EvaluatorOptionsBuilder.init(allocator, .{});
+defer options.deinit();
+try options.addModuleReader(module_reader);
+
+var evaluator = try pkl.Evaluator.init(init.io, allocator, options.build());
+defer evaluator.deinit();
+```
+
+`OptionsBuilder.build()` returns a borrowed `Evaluator.Options` view; create
+the evaluator before deinitializing the builder.
 
 ### Shared EvaluatorManager
 
@@ -245,6 +302,12 @@ allocator. Memory returned from `read` or `list_elements` may be allocated with
 that allocator and must not be freed by the callback; it is released after the
 response has been encoded into the transport's owned frame. Reader and logger
 callback contexts remain borrowed and must outlive their evaluator.
+
+Values returned by `evaluateModule`, `evaluateExpression`,
+`evaluateOutputText`, `evaluateOutputBytes`, and `evaluateOutputValue` follow
+the same ownership rules as `pkl.decode`: recursively deinitialize owning
+results with `pkl.deinit`. `OutputFiles` owns both its keys and values and has a
+dedicated `deinit()` helper.
 
 ## Tests
 

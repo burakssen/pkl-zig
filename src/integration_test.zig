@@ -22,6 +22,95 @@ fn fixturePath(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
     );
 }
 
+test "ModuleSource evaluates in-memory Pkl into typed Zig values" {
+    const allocator = std.testing.allocator;
+    const Config = struct {
+        name: []const u8,
+        answer: i64,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    defer evaluator.deinit();
+
+    var config = try evaluator.evaluateModule(Config, pkl.ModuleSource.fromText(
+        \\name = "pkl-zig"
+        \\answer = 40 + 2
+    ));
+    defer pkl.deinit(Config, allocator, &config);
+
+    try std.testing.expectEqualStrings("pkl-zig", config.name);
+    try std.testing.expectEqual(@as(i64, 42), config.answer);
+}
+
+test "standard output helpers evaluate text bytes value and files" {
+    const allocator = std.testing.allocator;
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    defer evaluator.deinit();
+
+    var text = try evaluator.evaluateOutputText(pkl.ModuleSource.fromText(
+        \\output {
+        \\  text = "hello from pkl"
+        \\}
+    ));
+    defer pkl.deinit([]const u8, allocator, &text);
+    try std.testing.expectEqualStrings("hello from pkl", text);
+
+    var bytes = try evaluator.evaluateOutputBytes(pkl.ModuleSource.fromText(
+        \\output {
+        \\  bytes = Bytes(1, 2, 3, 255)
+        \\}
+    ));
+    defer pkl.deinit([]const u8, allocator, &bytes);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 255 }, bytes);
+
+    const number = try evaluator.evaluateOutputValue(
+        i64,
+        pkl.ModuleSource.fromText(
+            \\output {
+            \\  value = 6 * 7
+            \\}
+        ),
+    );
+    try std.testing.expectEqual(@as(i64, 42), number);
+
+    var files = try evaluator.evaluateOutputFiles(pkl.ModuleSource.fromText(
+        \\output {
+        \\  files {
+        \\    ["hello.txt"] {
+        \\      text = "hello file"
+        \\    }
+        \\  }
+        \\}
+    ));
+    defer files.deinit();
+    try std.testing.expectEqualStrings("hello file", files.files.get("hello.txt").?);
+
+    var binary_files = try evaluator.evaluateOutputFilesBytes(pkl.ModuleSource.fromText(
+        \\output {
+        \\  files {
+        \\    ["data.bin"] {
+        \\      bytes = Bytes(4, 5, 6)
+        \\    }
+        \\  }
+        \\}
+    ));
+    defer binary_files.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, binary_files.files.get("data.bin").?);
+}
+
+test "preconfigured evaluator starts with binding defaults" {
+    const allocator = std.testing.allocator;
+    var evaluator = try pkl.Evaluator.initPreconfigured(std.testing.io, allocator);
+    defer evaluator.deinit();
+
+    const answer = try evaluator.evaluateExpression(
+        i64,
+        pkl.ModuleSource.fromUri("pkl:base"),
+        "21 * 2",
+    );
+    try std.testing.expectEqual(@as(i64, 42), answer);
+}
+
 test "Pkl 0.32 Reference decodes end to end" {
     const allocator = std.testing.allocator;
 
@@ -142,6 +231,29 @@ test "in-process custom ModuleReader evaluates module" {
     var name = try pkl.decode([]const u8, allocator, raw);
     defer pkl.deinit([]const u8, allocator, &name);
 
+    try std.testing.expectEqualStrings("pkl-zig", name);
+}
+
+test "OptionsBuilder automatically permits in-process reader schemes" {
+    const allocator = std.testing.allocator;
+    const module_reader = pkl.ModuleReader{
+        .scheme = "custommod",
+        .read = testModuleRead,
+    };
+
+    var options = try pkl.EvaluatorOptionsBuilder.init(allocator, .{});
+    defer options.deinit();
+    try options.addModuleReader(module_reader);
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, options.build());
+    defer evaluator.deinit();
+
+    var name = try evaluator.evaluateExpression(
+        []const u8,
+        pkl.ModuleSource.fromUri("custommod:config.pkl"),
+        "name",
+    );
+    defer pkl.deinit([]const u8, allocator, &name);
     try std.testing.expectEqualStrings("pkl-zig", name);
 }
 
@@ -439,4 +551,73 @@ test "manager routes concurrent evaluator responses by request id" {
 
     try expectAsyncValue(&first_results, 42);
     try expectAsyncValue(&second_results, 99);
+}
+
+const BlockingModuleState = struct {
+    entered: *std.Io.Queue(bool),
+    release: *std.Io.Queue(bool),
+};
+
+fn blockingModuleRead(
+    context: ?*anyopaque,
+    _: std.mem.Allocator,
+    uri: []const u8,
+) anyerror![]const u8 {
+    if (!std.mem.eql(u8, uri, "blocking:config.pkl")) return error.FileNotFound;
+    const state: *BlockingModuleState = @ptrCast(@alignCast(context.?));
+    try state.entered.putOne(std.testing.io, true);
+    _ = try state.release.getOne(std.testing.io);
+    return "answer = 42";
+}
+
+fn evaluateBlockingModule(
+    evaluator: *pkl.Evaluator,
+    results: *std.Io.Queue(AsyncEvaluation),
+) void {
+    const result = evaluator.evaluateExpression(
+        i64,
+        pkl.ModuleSource.fromUri("blocking:config.pkl"),
+        "answer",
+    ) catch |err| {
+        results.putOne(std.testing.io, .{ .failure = err }) catch {};
+        return;
+    };
+    results.putOne(std.testing.io, .{ .value = result }) catch {};
+}
+
+test "manager close lets an already-started reader request drain" {
+    const allocator = std.testing.allocator;
+    var entered_buffer: [1]bool = undefined;
+    var entered: std.Io.Queue(bool) = .init(&entered_buffer);
+    var release_buffer: [1]bool = undefined;
+    var release: std.Io.Queue(bool) = .init(&release_buffer);
+    var result_buffer: [1]AsyncEvaluation = undefined;
+    var results: std.Io.Queue(AsyncEvaluation) = .init(&result_buffer);
+    var state = BlockingModuleState{ .entered = &entered, .release = &release };
+
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+    var evaluator = try manager.newEvaluator(.{
+        .allowed_modules = &.{ "blocking:", "pkl:", "repl:" },
+        .module_readers = &.{.{
+            .scheme = "blocking",
+            .read = blockingModuleRead,
+            .context = &state,
+        }},
+    });
+    defer evaluator.deinit();
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(std.testing.io);
+    group.async(std.testing.io, evaluateBlockingModule, .{ &evaluator, &results });
+
+    try std.testing.expect(try entered.getOne(std.testing.io));
+    manager.close();
+    try release.putOne(std.testing.io, true);
+    try expectAsyncValue(&results, 42);
+
+    try std.testing.expectError(
+        error.ManagerClosed,
+        evaluator.evaluateExpressionRaw("pkl:base", "1 + 1"),
+    );
 }
