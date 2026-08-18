@@ -27,8 +27,12 @@ pub const EvaluatorManager = struct {
 
     /// Start the shared server using the same `PKL_EXEC` resolution as
     /// `Evaluator.initPreconfigured`.
-    pub fn initPreconfigured(io: std.Io, allocator: std.mem.Allocator) !EvaluatorManager {
-        var evaluator_options = try Evaluator.OptionsBuilder.preconfigured(allocator);
+    pub fn initPreconfigured(
+        io: std.Io,
+        allocator: std.mem.Allocator,
+        environ: *const std.process.Environ.Map,
+    ) !EvaluatorManager {
+        var evaluator_options = try Evaluator.OptionsBuilder.preconfigured(allocator, environ);
         defer evaluator_options.deinit();
         return init(io, allocator, .{ .pkl_argv = evaluator_options.build().pkl_argv });
     }
@@ -69,8 +73,11 @@ pub const EvaluatorManager = struct {
 
     /// Create an evaluator with process environment and cache defaults. The
     /// manager's server process has already been resolved by manager init.
-    pub fn newPreconfiguredEvaluator(self: *EvaluatorManager) !Evaluator {
-        var options = try Evaluator.OptionsBuilder.preconfigured(self.allocator);
+    pub fn newPreconfiguredEvaluator(
+        self: *EvaluatorManager,
+        environ: *const std.process.Environ.Map,
+    ) !Evaluator {
+        var options = try Evaluator.OptionsBuilder.preconfigured(self.allocator, environ);
         defer options.deinit();
         return self.newEvaluator(options.build());
     }

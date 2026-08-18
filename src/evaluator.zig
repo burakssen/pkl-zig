@@ -99,7 +99,6 @@ pub const OptionsBuilder = struct {
     resource_readers: std.ArrayList(ResourceReader) = .empty,
     owned_patterns: std.ArrayList([]u8) = .empty,
     pkl_argv: std.ArrayList([]const u8) = .empty,
-    process_env: ?std.process.EnvMap = null,
     env_view: ?std.StringHashMap([]const u8) = null,
     cache_dir: ?[]u8 = null,
     has_allowed_modules: bool = false,
@@ -133,25 +132,26 @@ pub const OptionsBuilder = struct {
         return self;
     }
 
-    /// Mirrors the normal binding defaults while capturing the current process
-    /// environment, the conventional Pkl cache directory, and `PKL_EXEC`.
-    pub fn preconfigured(allocator: std.mem.Allocator) !OptionsBuilder {
+    /// Mirrors the normal binding defaults using the process environment
+    /// supplied by the application. Zig 0.16 intentionally makes environment
+    /// access explicit, so callers normally pass `init.environ_map` from main.
+    pub fn preconfigured(
+        allocator: std.mem.Allocator,
+        environ: *const std.process.Environ.Map,
+    ) !OptionsBuilder {
         var self = try OptionsBuilder.init(allocator, .{});
         errdefer self.deinit();
 
-        self.process_env = try std.process.getEnvMap(allocator);
         self.env_view = std.StringHashMap([]const u8).init(allocator);
-        var env_iterator = self.process_env.?.iterator();
-        while (env_iterator.next()) |entry| {
-            try self.env_view.?.put(entry.key_ptr.*, entry.value_ptr.*);
+        for (environ.keys(), environ.values()) |key, env_value| {
+            try self.env_view.?.put(key, env_value);
         }
 
-        const env = &self.process_env.?;
-        if (env.get("HOME") orelse env.get("USERPROFILE")) |home| {
+        if (environ.get("HOME") orelse environ.get("USERPROFILE")) |home| {
             self.cache_dir = try std.fs.path.join(allocator, &.{ home, ".pkl", "cache" });
         }
 
-        if (env.get("PKL_EXEC")) |command| {
+        if (environ.get("PKL_EXEC")) |command| {
             var tokens = std.mem.tokenizeAny(u8, command, " \t\r\n");
             while (tokens.next()) |token| try self.pkl_argv.append(allocator, token);
             if (self.pkl_argv.items.len != 0) try self.pkl_argv.append(allocator, "server");
@@ -161,7 +161,6 @@ pub const OptionsBuilder = struct {
 
     pub fn deinit(self: *OptionsBuilder) void {
         if (self.env_view) |*env| env.deinit();
-        if (self.process_env) |*env| env.deinit();
         if (self.cache_dir) |cache_dir| self.allocator.free(cache_dir);
         for (self.owned_patterns.items) |pattern| self.allocator.free(pattern);
         self.owned_patterns.deinit(self.allocator);
@@ -229,8 +228,12 @@ pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluat
 
 /// Create an evaluator with process environment, conventional cache directory,
 /// and `PKL_EXEC` defaults populated automatically.
-pub fn initPreconfigured(io: std.Io, allocator: std.mem.Allocator) !Evaluator {
-    var options = try OptionsBuilder.preconfigured(allocator);
+pub fn initPreconfigured(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+) !Evaluator {
+    var options = try OptionsBuilder.preconfigured(allocator, environ);
     defer options.deinit();
     return init(io, allocator, options.build());
 }

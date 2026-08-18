@@ -100,7 +100,10 @@ test "standard output helpers evaluate text bytes value and files" {
 
 test "preconfigured evaluator starts with binding defaults" {
     const allocator = std.testing.allocator;
-    var evaluator = try pkl.Evaluator.initPreconfigured(std.testing.io, allocator);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+
+    var evaluator = try pkl.Evaluator.initPreconfigured(std.testing.io, allocator, &environ);
     defer evaluator.deinit();
 
     const answer = try evaluator.evaluateExpression(

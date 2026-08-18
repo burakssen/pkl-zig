@@ -131,14 +131,20 @@ var evaluator = try pkl.Evaluator.init(init.io, allocator, .{
 });
 ```
 
-For normal application defaults, `Evaluator.initPreconfigured` captures the
-current process environment, uses `$HOME/.pkl/cache` (or the Windows home
-directory equivalent), and honors `PKL_EXEC` before falling back to `pkl` on
-`PATH`:
+For normal application defaults, pass Zig 0.16's explicit process environment
+from `std.process.Init`. `Evaluator.initPreconfigured` forwards it to Pkl, uses
+`$HOME/.pkl/cache` (or the Windows home-directory equivalent), and honors
+`PKL_EXEC` before falling back to `pkl` on `PATH`:
 
 ```zig
-var evaluator = try pkl.Evaluator.initPreconfigured(init.io, allocator);
-defer evaluator.deinit();
+pub fn main(init: std.process.Init) !void {
+    var evaluator = try pkl.Evaluator.initPreconfigured(
+        init.io,
+        init.gpa,
+        init.environ_map,
+    );
+    defer evaluator.deinit();
+}
 ```
 
 Use `pkl.EvaluatorOptionsBuilder` when preconfigured/owned option storage or
