@@ -165,6 +165,33 @@ Each generated package has:
 - generated enums for string-literal unions when possible
 - module struct helpers such as `loadFromPath` and `load`
 
+### Build Integration
+
+In your `build.zig`, generate and import typed config modules using `pkl_zig.addCodegen`:
+
+```zig
+const pkl_zig = @import("pkl_zig");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const pkl_dep = b.dependency("pkl_zig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const appconfig_mod = pkl_zig.addCodegen(b, pkl_dep, .{
+        .target = target,
+        .optimize = optimize,
+        .package_name = "appconfig",
+        .pkl_files = &.{b.path("config/AppConfig.pkl")},
+    });
+
+    exe.root_module.addImport("appconfig", appconfig_mod);
+}
+```
+
 Codegen can also use `@zig.Name`, `@zig.Field`, `--mapping`, and generator
 settings for package and field naming. It currently supports a focused subset of
 Pkl types and should be treated as experimental.

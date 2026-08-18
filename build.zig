@@ -49,17 +49,12 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(example_exe);
     run_step.dependOn(&run_cmd.step);
 
-    const codegen_cmd = b.addSystemCommand(&.{ "pkl", "run", "codegen/src/gen.pkl", "--output-path" });
-    codegen_cmd.stdio = .inherit;
-    const codegen_dir = codegen_cmd.addOutputDirectoryArg("codegen-example");
-    codegen_cmd.addFileArg(b.path("example/codegen/AppConfig.pkl"));
-    const appconfig_mod = b.createModule(.{
+    const appconfig_mod = addCodegen(b, null, .{
         .target = target,
         .optimize = optimize,
-        .root_source_file = codegen_dir.path(b, "appconfig/index.zig"),
-        .imports = &.{
-            .{ .name = "pkl", .module = modules.pkl },
-        },
+        .package_name = "appconfig",
+        .pkl_files = &.{b.path("example/codegen/AppConfig.pkl")},
+        .output_dir = "codegen-example",
     });
     const codegen_example_mod = b.createModule(.{
         .target = target,
@@ -253,4 +248,76 @@ fn createModules(
         .transport = transport_mod,
         .pkl = pkl_mod,
     };
+}
+
+pub const CodegenOptions = struct {
+    /// Optional single path to .pkl file or directory
+    pkl_file: ?std.Build.LazyPath = null,
+    pkl_module: ?[]const u8 = null,
+    /// Or multiple .pkl files
+    pkl_files: []const std.Build.LazyPath = &.{},
+    pkl_modules: []const []const u8 = &.{},
+
+    /// Target module package name (e.g. "appconfig"), used to locate <output_dir>/<package_name>/index.zig
+    package_name: []const u8,
+
+    /// Optional root source file relative to output directory (defaults to "<package_name>/index.zig")
+    root_file: ?[]const u8 = null,
+
+    /// Base path for relative package structure passed to --base-path
+    base_path: ?[]const u8 = null,
+
+    /// Output directory name in zig-cache (defaults to "<package_name>-codegen")
+    output_dir: ?[]const u8 = null,
+
+    /// Target platform for the generated module
+    target: ?std.Build.ResolvedTarget = null,
+
+    /// Optimization mode for the generated module
+    optimize: ?std.builtin.OptimizeMode = null,
+
+    /// Optional extra CLI arguments to pass to `pkl run gen.pkl`
+    extra_args: []const []const u8 = &.{},
+};
+
+// One simple system command calling pkl run codegen/src/gen.pkl, returning a ready-to-import *std.Build.Module.
+pub fn addCodegen(
+    b: *std.Build,
+    pkl_dep: ?*std.Build.Dependency,
+    options: CodegenOptions,
+) *std.Build.Module {
+    const gen_script = if (pkl_dep) |dep| dep.path("codegen/src/gen.pkl") else b.path("codegen/src/gen.pkl");
+    const codegen_cmd = b.addSystemCommand(&.{ "pkl", "run" });
+    codegen_cmd.addFileArg(gen_script);
+    codegen_cmd.addArg("--output-path");
+    const out_dir_name = options.output_dir orelse b.fmt("{s}-codegen", .{options.package_name});
+    const codegen_dir = codegen_cmd.addOutputDirectoryArg(out_dir_name);
+    if (options.base_path) |bp| {
+        codegen_cmd.addArgs(&.{ "--base-path", bp });
+    }
+    if (options.extra_args.len > 0) {
+        codegen_cmd.addArgs(options.extra_args);
+    }
+    if (options.pkl_file) |f| codegen_cmd.addFileArg(f);
+    if (options.pkl_module) |m| codegen_cmd.addFileArg(b.path(m));
+    for (options.pkl_files) |f| codegen_cmd.addFileArg(f);
+    for (options.pkl_modules) |m| codegen_cmd.addFileArg(b.path(m));
+    codegen_cmd.stdio = .inherit;
+
+    const root_subpath = options.root_file orelse b.fmt("{s}/index.zig", .{options.package_name});
+    const root_source_file = codegen_dir.path(b, root_subpath);
+
+    const pkl_mod = if (pkl_dep) |dep|
+        dep.module("pkl")
+    else
+        b.modules.get("pkl") orelse unreachable;
+
+    return b.createModule(.{
+        .target = options.target,
+        .optimize = options.optimize,
+        .root_source_file = root_source_file,
+        .imports = &.{
+            .{ .name = "pkl", .module = pkl_mod },
+        },
+    });
 }
