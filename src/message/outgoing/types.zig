@@ -47,17 +47,25 @@ pub const Proxy = struct {
     no_proxy: ?[]const []const u8 = null,
 };
 
+/// Header names map to one or more values.
+pub const HeaderMap = std.StringHashMap([]const []const u8);
+
+/// HTTP headers keyed by URL glob pattern.
+pub const Headers = std.StringHashMap(HeaderMap);
+
 /// HTTP client settings for Pkl.
 pub const Http = struct {
     ca_certificates: ?[]const u8 = null,
     proxy: ?*Proxy = null,
     rewrites: ?std.StringHashMap([]const u8) = null,
+    headers: ?Headers = null,
 };
 
 /// Describes an external reader command.
 pub const ExternalReader = struct {
     executable: []const u8,
     arguments: ?[][]const u8 = null,
+    working_dir: ?[]const u8 = null,
 };
 
 /// Request to create a new Pkl evaluator.

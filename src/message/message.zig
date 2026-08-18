@@ -353,13 +353,40 @@ test "codec toPayload uses protocol string and binary field encodings" {
 test "codec toPayload protocol edge field encoding checklist" {
     const allocator = std.testing.allocator;
 
+    const accept_values = [_][]const u8{ "application/json", "text/plain" };
+    var accept_headers = outgoing.HeaderMap.init(allocator);
+    defer accept_headers.deinit();
+    try accept_headers.put("Accept", &accept_values);
+
+    var headers = outgoing.Headers.init(allocator);
+    defer headers.deinit();
+    try headers.put("https://example.com/**", accept_headers);
+
     var http_payload = try codec.toPayload(allocator, outgoing.Http{
         .ca_certificates = "pem-bytes",
+        .headers = headers,
     });
     defer http_payload.free(allocator);
     const ca_certificates = (try http_payload.mapGet("caCertificates")).?;
     try std.testing.expect(ca_certificates == .bin);
     try std.testing.expectEqualStrings("pem-bytes", try ca_certificates.asBin());
+
+    const headers_payload = (try http_payload.mapGet("headers")).?;
+    const pattern_headers = (try headers_payload.mapGet("https://example.com/**")).?;
+    const accept = (try pattern_headers.mapGet("Accept")).?;
+    try std.testing.expectEqual(@as(usize, 2), try accept.getArrLen());
+    try std.testing.expectEqualStrings("application/json", try (try accept.getArrElement(0)).asStr());
+    try std.testing.expectEqualStrings("text/plain", try (try accept.getArrElement(1)).asStr());
+
+    var external_reader_payload = try codec.toPayload(allocator, outgoing.ExternalReader{
+        .executable = "/usr/bin/reader",
+        .working_dir = "/tmp/reader",
+    });
+    defer external_reader_payload.free(allocator);
+    try std.testing.expectEqualStrings(
+        "/tmp/reader",
+        try (try external_reader_payload.mapGet("workingDir")).?.asStr(),
+    );
 
     var evaluator_payload = try codec.toPayload(allocator, outgoing.CreateEvaluator{
         .request_id = 9,
