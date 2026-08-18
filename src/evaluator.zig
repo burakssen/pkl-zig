@@ -370,7 +370,3 @@ test "fileUriFromPath resolves relative path against cwd" {
     try std.testing.expect(std.mem.endsWith(u8, uri, "/config/My%20File.pkl"));
 }
 
-test {
-    _ = message;
-    _ = log;
-}

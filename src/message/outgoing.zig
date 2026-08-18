@@ -1,4 +1,10 @@
 const std = @import("std");
+const msgpack = @import("msgpack");
+
+const Code = @import("code.zig").Code;
+const codec = @import("codec.zig");
+
+const log = std.log.scoped(.@"pkl-zig|message|outgoing");
 
 /// Describes a resource reader provided by the client.
 pub const ResourceReader = struct {
@@ -152,4 +158,49 @@ pub const InitializeModuleReaderResponse = struct {
 pub const InitializeResourceReaderResponse = struct {
     request_id: i64,
     spec: ?ResourceReader = null,
+};
+
+/// Represents any message sent to Pkl.
+pub const Message = union(enum) {
+    create_evaluator: CreateEvaluator,
+    close_evaluator: CloseEvaluator,
+    evaluate: Evaluate,
+    read_resource_response: ReadResourceResponse,
+    read_module_response: ReadModuleResponse,
+    list_resources_response: ListResourcesResponse,
+    list_modules_response: ListModulesResponse,
+    initialize_module_reader_response: InitializeModuleReaderResponse,
+    initialize_resource_reader_response: InitializeResourceReaderResponse,
+
+    /// Encodes an outgoing message into a msgpack payload frame.
+    pub fn encode(self: Message, allocator: std.mem.Allocator) !msgpack.Payload {
+        log.debug("Encoding outgoing message of type {s}.", .{@tagName(self)});
+        const body = switch (self) {
+            .create_evaluator => |msg| try codec.toPayload(allocator, msg),
+            .close_evaluator => |msg| try codec.toPayload(allocator, msg),
+            .evaluate => |msg| try codec.toPayload(allocator, msg),
+            .read_resource_response => |msg| try codec.toPayload(allocator, msg),
+            .read_module_response => |msg| try codec.toPayload(allocator, msg),
+            .list_resources_response => |msg| try codec.toPayload(allocator, msg),
+            .list_modules_response => |msg| try codec.toPayload(allocator, msg),
+            .initialize_module_reader_response => |msg| try codec.toPayload(allocator, msg),
+            .initialize_resource_reader_response => |msg| try codec.toPayload(allocator, msg),
+        };
+
+        return codec.encodeFrame(allocator, self.code(), body);
+    }
+
+    pub fn code(self: Message) Code {
+        return switch (self) {
+            .create_evaluator => .new_evaluator,
+            .close_evaluator => .close_evaluator,
+            .evaluate => .evaluate,
+            .read_resource_response => .evaluate_read_response,
+            .read_module_response => .evaluate_read_module_response,
+            .list_resources_response => .list_resources_response,
+            .list_modules_response => .list_modules_response,
+            .initialize_module_reader_response => .initialize_module_reader_response,
+            .initialize_resource_reader_response => .initialize_resource_reader_response,
+        };
+    }
 };

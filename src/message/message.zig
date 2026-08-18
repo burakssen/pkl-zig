@@ -2,11 +2,14 @@ const std = @import("std");
 const msgpack = @import("msgpack");
 const build_options = @import("build_options");
 
-pub const errors = @import("errors.zig");
+pub const errors = struct {
+    pub const DecodeError = codec.DecodeError;
+    pub const EncodeError = codec.EncodeError;
+};
 pub const Code = @import("code.zig").Code;
 pub const codec = @import("codec.zig");
-pub const incoming = @import("incoming/incoming.zig");
-pub const outgoing = @import("outgoing/outgoing.zig");
+pub const incoming = @import("incoming.zig");
+pub const outgoing = @import("outgoing.zig");
 
 pub const Incoming = incoming.Message;
 pub const Outgoing = outgoing.Message;

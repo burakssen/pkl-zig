@@ -1,8 +1,25 @@
+// consolidated message codec with error definitions and lean reflection helpers
 const std = @import("std");
 const msgpack = @import("msgpack");
 
-const errors = @import("errors.zig");
 const Code = @import("code.zig").Code;
+
+/// Errors that can occur during message decoding.
+pub const DecodeError = error{
+    UnknownMessageCode,
+    InvalidArrayLength,
+    DecodeFailure,
+    MissingField,
+    InvalidType,
+};
+
+/// Errors that can occur during message encoding.
+pub const EncodeError = error{
+    EncodeFailure,
+    UnsupportedType,
+    MapPutFailed,
+    ArrayElementSetFailed,
+};
 
 pub const Frame = struct {
     code: Code,
@@ -11,10 +28,10 @@ pub const Frame = struct {
 
 pub fn decodeFrame(payload: *msgpack.Payload) !Frame {
     const len = try payload.getArrLen();
-    if (len != 2) return errors.DecodeError.InvalidArrayLength;
+    if (len != 2) return DecodeError.InvalidArrayLength;
     const code_payload = try payload.getArrElement(0);
     const code = std.enums.fromInt(Code, try code_payload.getInt()) orelse {
-        return errors.DecodeError.UnknownMessageCode;
+        return DecodeError.UnknownMessageCode;
     };
 
     return .{
@@ -34,36 +51,33 @@ pub fn encodeFrame(allocator: std.mem.Allocator, code: Code, body: msgpack.Paylo
     return payload;
 }
 
-/// Converts a snake_case string to camelCase.
+/// Converts a snake_case string to camelCase at comptime.
 /// Special case for "error" field.
 pub fn snakeToCamel(comptime input: []const u8) []const u8 {
     if (std.mem.eql(u8, input, "error")) return "error";
-    comptime var out_len = 0;
-    comptime var i = 0;
-    while (i < input.len) : (i += 1) {
-        if (input[i] != '_') out_len += 1;
-    }
-
-    comptime var output: [out_len]u8 = undefined;
-    i = 0;
-    comptime var out_idx = 0;
-    comptime var next_upper = false;
-    while (i < input.len) : (i += 1) {
-        if (input[i] == '_') {
-            next_upper = true;
-        } else {
-            if (next_upper) {
-                output[out_idx] = std.ascii.toUpper(input[i]);
-                next_upper = false;
-            } else {
-                output[out_idx] = input[i];
-            }
-            out_idx += 1;
+    comptime {
+        var count: usize = 0;
+        for (input) |c| {
+            if (c != '_') count += 1;
         }
-    }
 
-    const final = output;
-    return &final;
+        var output: [count]u8 = undefined;
+        var out_idx: usize = 0;
+        var capitalize_next = false;
+
+        for (input) |c| {
+            if (c == '_') {
+                capitalize_next = true;
+            } else {
+                output[out_idx] = if (capitalize_next) std.ascii.toUpper(c) else c;
+                capitalize_next = false;
+                out_idx += 1;
+            }
+        }
+
+        const final = output;
+        return &final;
+    }
 }
 
 /// Decodes a msgpack map payload into a value of type T.
@@ -110,8 +124,6 @@ pub fn deinitDecoded(comptime T: type, allocator: std.mem.Allocator, value: T) v
         },
         .pointer => |pointer_info| switch (pointer_info.size) {
             .slice => {
-                // The codec intentionally borrows scalar byte/string slices
-                // directly from the msgpack payload.
                 if (pointer_info.child == u8) return;
 
                 for (value) |item| {
@@ -150,7 +162,7 @@ fn fromPayloadValue(comptime T: type, allocator: std.mem.Allocator, payload: msg
         .pointer => |pointer_info| decodePointer(T, pointer_info, allocator, payload),
         .array => |array_info| blk: {
             const len = try payload.getArrLen();
-            if (len != array_info.len) return errors.DecodeError.InvalidArrayLength;
+            if (len != array_info.len) return DecodeError.InvalidArrayLength;
 
             var result: T = undefined;
             var initialized: usize = 0;
@@ -193,7 +205,7 @@ fn fromPayloadStruct(comptime T: type, allocator: std.mem.Allocator, payload: ms
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
         } else {
-            return errors.DecodeError.MissingField;
+            return DecodeError.MissingField;
         }
         initialized += 1;
     }
@@ -211,7 +223,7 @@ fn decodePointer(
         .slice => {
             if (pointer_info.child == u8) {
                 if (payload == .bin) return try payload.asBin();
-                if (!pointer_info.is_const) return errors.DecodeError.InvalidType;
+                if (!pointer_info.is_const) return DecodeError.InvalidType;
                 return try payload.asStr();
             }
 
@@ -245,7 +257,7 @@ fn decodePointer(
 
 fn decodeInt(comptime T: type, payload: msgpack.Payload) !T {
     const value = try payload.getInt();
-    return std.math.cast(T, value) orelse errors.DecodeError.InvalidType;
+    return std.math.cast(T, value) orelse DecodeError.InvalidType;
 }
 
 fn decodeFloat(comptime T: type, payload: msgpack.Payload) !T {
@@ -272,7 +284,7 @@ fn fromPayloadStringHashMap(comptime T: type, allocator: std.mem.Allocator, payl
 }
 
 /// Encodes a value into a msgpack payload.
-pub fn toPayload(allocator: std.mem.Allocator, value: anytype) (errors.EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
+pub fn toPayload(allocator: std.mem.Allocator, value: anytype) (EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
     return toPayloadValue(allocator, value, false);
 }
 
@@ -280,7 +292,7 @@ fn toPayloadValue(
     allocator: std.mem.Allocator,
     value: anytype,
     comptime encode_u8_slice_as_bin: bool,
-) (errors.EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
+) (EncodeError || std.mem.Allocator.Error)!msgpack.Payload {
     const T = @TypeOf(value);
     if (comptime isStringHashMap(T)) {
         var map = msgpack.Payload.mapPayload(allocator);
@@ -298,7 +310,7 @@ fn toPayloadValue(
     }
     return switch (@typeInfo(T)) {
         .@"struct" => encodeStruct(allocator, value),
-        .int => msgpack.Payload.intToPayload(std.math.cast(i64, value) orelse return errors.EncodeError.EncodeFailure),
+        .int => msgpack.Payload.intToPayload(std.math.cast(i64, value) orelse return EncodeError.EncodeFailure),
         .float => msgpack.Payload.floatToPayload(@floatCast(value)),
         .bool => msgpack.Payload.boolToPayload(value),
         .pointer => |ptr_info| encodePointer(allocator, value, ptr_info, encode_u8_slice_as_bin),
@@ -322,27 +334,23 @@ fn encodeArray(
     const T = @TypeOf(value);
     const array_info = @typeInfo(T).array;
 
-    // Preserve the existing byte-array semantics without routing a fixed
-    // array through `value[0..]`. In Zig 0.16 a full slice of a fixed array
-    // can retain pointer-to-array type, which would recurse through the
-    // `.pointer(.one)` encoder back into the array encoder indefinitely.
     if (array_info.child == u8) {
         const bytes: []const u8 = &value;
         if (encode_u8_slice_as_bin) {
             return msgpack.Payload.binToPayload(bytes, allocator) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
-                return errors.EncodeError.EncodeFailure;
+                return EncodeError.EncodeFailure;
             };
         }
         return msgpack.Payload.strToPayload(bytes, allocator) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            return errors.EncodeError.EncodeFailure;
+            return EncodeError.EncodeFailure;
         };
     }
 
     var arr = msgpack.Payload.arrPayload(array_info.len, allocator) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return errors.EncodeError.EncodeFailure;
+        return EncodeError.EncodeFailure;
     };
     errdefer arr.free(allocator);
 
@@ -350,7 +358,7 @@ fn encodeArray(
         const item_payload = try toPayloadValue(allocator, item, false);
         arr.setArrElement(i, item_payload) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            return errors.EncodeError.ArrayElementSetFailed;
+            return EncodeError.ArrayElementSetFailed;
         };
     }
 
@@ -401,24 +409,24 @@ fn encodePointer(
                 if (encode_u8_slice_as_bin) {
                     return msgpack.Payload.binToPayload(value, allocator) catch |err| {
                         if (err == error.OutOfMemory) return error.OutOfMemory;
-                        return errors.EncodeError.EncodeFailure;
+                        return EncodeError.EncodeFailure;
                     };
                 }
                 return msgpack.Payload.strToPayload(value, allocator) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
-                    return errors.EncodeError.EncodeFailure;
+                    return EncodeError.EncodeFailure;
                 };
             }
             var arr = msgpack.Payload.arrPayload(value.len, allocator) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
-                return errors.EncodeError.EncodeFailure;
+                return EncodeError.EncodeFailure;
             };
             errdefer arr.free(allocator);
             for (value, 0..) |item, i| {
                 const item_payload = try toPayloadValue(allocator, item, false);
                 arr.setArrElement(i, item_payload) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
-                    return errors.EncodeError.ArrayElementSetFailed;
+                    return EncodeError.ArrayElementSetFailed;
                 };
             }
             return arr;
@@ -432,7 +440,7 @@ fn mapPut(map: *msgpack.Payload, allocator: std.mem.Allocator, key: []const u8, 
     errdefer value.free(allocator);
     map.mapPut(key, value) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return errors.EncodeError.MapPutFailed;
+        return EncodeError.MapPutFailed;
     };
 }
 
@@ -491,7 +499,7 @@ test "fromPayload cleans partially decoded struct fields on failure" {
     defer payload.free(allocator);
 
     try std.testing.expectError(
-        errors.DecodeError.MissingField,
+        DecodeError.MissingField,
         fromPayload(Target, allocator, &payload),
     );
 }
@@ -507,7 +515,7 @@ test "fromPayload cleans nested slice elements on failure" {
     defer payload.free(allocator);
 
     try std.testing.expectError(
-        errors.DecodeError.InvalidType,
+        DecodeError.InvalidType,
         fromPayload([][]u16, allocator, &payload),
     );
 }
@@ -523,7 +531,7 @@ test "fromPayload cleans partially decoded arrays on failure" {
     defer payload.free(allocator);
 
     try std.testing.expectError(
-        errors.DecodeError.InvalidType,
+        DecodeError.InvalidType,
         fromPayload([2][]u16, allocator, &payload),
     );
 }
@@ -543,7 +551,7 @@ test "fromPayload cleans StringHashMap values on failure" {
     defer payload.free(allocator);
 
     try std.testing.expectError(
-        errors.DecodeError.InvalidType,
+        DecodeError.InvalidType,
         fromPayload(std.StringHashMap([]u16), allocator, &payload),
     );
 }
