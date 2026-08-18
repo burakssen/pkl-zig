@@ -1,5 +1,6 @@
 const std = @import("std");
 const pkl = @import("pkl");
+const integration_build_options = @import("integration_build_options");
 
 test "evaluator decodes pkl-binary end to end" {
     const allocator = std.testing.allocator;
@@ -15,10 +16,10 @@ test "evaluator decodes pkl-binary end to end" {
 }
 
 fn fixturePath(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
-    // `zig build` runs integration tests from the repository root. Avoid
-    // deriving this from @src().file: Zig may report only the source basename,
-    // which would incorrectly resolve fixtures as ./integration-fixtures.
-    return std.fs.path.join(allocator, &.{ "src", "integration-fixtures", relative });
+    return std.fs.path.join(
+        allocator,
+        &.{ integration_build_options.integration_fixture_root, relative },
+    );
 }
 
 test "Pkl 0.32 Reference decodes end to end" {
@@ -33,12 +34,7 @@ test "Pkl 0.32 Reference decodes end to end" {
     const uri = try pkl.Evaluator.fileUriFromPath(std.testing.io, allocator, path);
     defer allocator.free(uri);
 
-    const raw = evaluator.evaluateExpressionRaw(uri, "nested") catch |err| {
-        if (evaluator.lastError()) |diagnostic| {
-            std.debug.print("\nPkl Reference fixture diagnostic:\n{s}\n", .{diagnostic});
-        }
-        return err;
-    };
+    const raw = try evaluator.evaluateExpressionRaw(uri, "nested");
     defer allocator.free(raw);
 
     var reference = try pkl.decode(pkl.Reference, allocator, raw);
@@ -64,27 +60,6 @@ test "PklProject resolved evaluator settings apply end to end" {
     const project_dir = try fixturePath(allocator, "project");
     defer allocator.free(project_dir);
 
-    const project_file = try std.fs.path.join(allocator, &.{ project_dir, "PklProject" });
-    defer allocator.free(project_file);
-
-    var project_probe = try pkl.Evaluator.init(std.testing.io, allocator, .{});
-    defer project_probe.deinit();
-
-    const project_uri = try pkl.Evaluator.fileUriFromPath(
-        std.testing.io,
-        allocator,
-        project_file,
-    );
-    defer allocator.free(project_uri);
-
-    const project_probe_raw = project_probe.evaluateModuleRaw(project_uri) catch |err| {
-        if (project_probe.lastError()) |diagnostic| {
-            std.debug.print("\nPklProject fixture diagnostic:\n{s}\n", .{diagnostic});
-        }
-        return err;
-    };
-    allocator.free(project_probe_raw);
-
     var project = try pkl.Project.load(std.testing.io, allocator, project_dir, .{});
     defer project.deinit(allocator);
 
@@ -102,12 +77,7 @@ test "PklProject resolved evaluator settings apply end to end" {
     const module_uri = try pkl.Evaluator.fileUriFromPath(std.testing.io, allocator, module_path);
     defer allocator.free(module_uri);
 
-    const raw = evaluator.evaluateExpressionRaw(module_uri, "result") catch |err| {
-        if (evaluator.lastError()) |diagnostic| {
-            std.debug.print("\nResolved project evaluator diagnostic:\n{s}\n", .{diagnostic});
-        }
-        return err;
-    };
+    const raw = try evaluator.evaluateExpressionRaw(module_uri, "result");
     defer allocator.free(raw);
 
     var result = try pkl.decode([]const u8, allocator, raw);

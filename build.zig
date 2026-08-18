@@ -105,6 +105,13 @@ pub fn build(b: *std.Build) void {
     const integration_options = b.addOptions();
     integration_options.addOption(bool, "integration_tests", true);
 
+    const integration_fixture_options = b.addOptions();
+    integration_fixture_options.addOption(
+        []const u8,
+        "integration_fixture_root",
+        b.pathFromRoot("src/integration-fixtures"),
+    );
+
     const integration_message_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -148,6 +155,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pkl", .module = integration_pkl_mod },
         },
     });
+    integration_evaluator_mod.addOptions(
+        "integration_build_options",
+        integration_fixture_options,
+    );
     const integration_evaluator_test = b.addTest(.{ .root_module = integration_evaluator_mod });
     const integration_evaluator_cmd = b.addRunArtifact(integration_evaluator_test);
     integration_step.dependOn(&integration_evaluator_cmd.step);
