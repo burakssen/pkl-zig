@@ -84,3 +84,131 @@ test "PklProject resolved evaluator settings apply end to end" {
     defer pkl.deinit([]const u8, allocator, &result);
     try std.testing.expectEqualStrings("from-module-path:from-project", result);
 }
+
+fn testResourceRead(_: ?*anyopaque, _: std.mem.Allocator, uri: []const u8) anyerror![]const u8 {
+    if (std.mem.eql(u8, uri, "customres:hello.txt")) {
+        return "Hello from in-process resource reader!";
+    }
+    return error.FileNotFound;
+}
+
+test "in-process custom ResourceReader reads resource" {
+    const allocator = std.testing.allocator;
+
+    const resource_reader = pkl.ResourceReader{
+        .scheme = "customres",
+        .read = testResourceRead,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_resources = &.{ "customres:", "pkl:" },
+        .resource_readers = &.{resource_reader},
+    });
+    defer evaluator.deinit();
+
+    const raw = try evaluator.evaluateExpressionRaw("pkl:base", "read(\"customres:hello.txt\").text");
+    defer allocator.free(raw);
+
+    var text = try pkl.decode([]const u8, allocator, raw);
+    defer pkl.deinit([]const u8, allocator, &text);
+
+    try std.testing.expectEqualStrings("Hello from in-process resource reader!", text);
+}
+
+fn testModuleRead(_: ?*anyopaque, _: std.mem.Allocator, uri: []const u8) anyerror![]const u8 {
+    if (std.mem.eql(u8, uri, "custommod:config.pkl")) {
+        return "name = \"pkl-zig\"\nversion = 1";
+    }
+    return error.FileNotFound;
+}
+
+test "in-process custom ModuleReader evaluates module" {
+    const allocator = std.testing.allocator;
+
+    const module_reader = pkl.ModuleReader{
+        .scheme = "custommod",
+        .read = testModuleRead,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_modules = &.{ "custommod:", "pkl:", "repl:" },
+        .module_readers = &.{module_reader},
+    });
+    defer evaluator.deinit();
+
+    const raw = try evaluator.evaluateExpressionRaw("custommod:config.pkl", "name");
+    defer allocator.free(raw);
+
+    var name = try pkl.decode([]const u8, allocator, raw);
+    defer pkl.deinit([]const u8, allocator, &name);
+
+    try std.testing.expectEqualStrings("pkl-zig", name);
+}
+
+fn testGlobModuleRead(_: ?*anyopaque, _: std.mem.Allocator, uri: []const u8) anyerror![]const u8 {
+    if (std.mem.eql(u8, uri, "globmod:/a.pkl")) {
+        return "val = 10";
+    } else if (std.mem.eql(u8, uri, "globmod:/b.pkl")) {
+        return "val = 20";
+    }
+    return error.FileNotFound;
+}
+
+fn testGlobModuleList(_: ?*anyopaque, _: std.mem.Allocator, uri: []const u8) anyerror![]const pkl.PathElement {
+    if (std.mem.eql(u8, uri, "globmod:/")) {
+        const elements = [_]pkl.PathElement{
+            .{ .name = "a.pkl", .is_directory = false },
+            .{ .name = "b.pkl", .is_directory = false },
+        };
+        return &elements;
+    }
+    return error.FileNotFound;
+}
+
+test "in-process custom ModuleReader globbing" {
+    const allocator = std.testing.allocator;
+
+    const module_reader = pkl.ModuleReader{
+        .scheme = "globmod",
+        .has_hierarchical_uris = true,
+        .is_globbable = true,
+        .read = testGlobModuleRead,
+        .list_elements = testGlobModuleList,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_modules = &.{ "globmod:", "pkl:", "repl:" },
+        .module_readers = &.{module_reader},
+    });
+    defer evaluator.deinit();
+
+    const raw = try evaluator.evaluateExpressionRaw("pkl:base", "(import*(\"globmod:/*.pkl\")).length");
+    defer allocator.free(raw);
+
+    const count = try pkl.decode(i64, allocator, raw);
+    try std.testing.expectEqual(@as(i64, 2), count);
+}
+
+fn testFailingRead(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
+    return error.ResourceNotFound;
+}
+
+test "in-process custom ResourceReader propagates read error" {
+    const allocator = std.testing.allocator;
+
+    const resource_reader = pkl.ResourceReader{
+        .scheme = "failres",
+        .read = testFailingRead,
+    };
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_resources = &.{ "failres:", "pkl:" },
+        .resource_readers = &.{resource_reader},
+    });
+    defer evaluator.deinit();
+
+    const result = evaluator.evaluateExpressionRaw("pkl:base", "read(\"failres:missing.txt\").text");
+    try std.testing.expectError(error.EvaluateFailed, result);
+    try std.testing.expect(evaluator.lastError() != null);
+    try std.testing.expect(std.mem.indexOf(u8, evaluator.lastError().?, "ResourceNotFound") != null);
+}

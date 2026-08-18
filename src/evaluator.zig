@@ -1,12 +1,34 @@
 const std = @import("std");
 
 const message = @import("message");
+const incoming = message.incoming;
 const outgoing = message.outgoing;
 const Transport = @import("transport");
 const value = @import("value.zig");
 const log = std.log.scoped(.@"pkl-zig|evaluator");
 
 const Evaluator = @This();
+
+// Simple function-pointer vtables instead of dynamic interface abstractions.
+
+pub const ResourceReader = struct {
+    scheme: []const u8,
+    has_hierarchical_uris: bool = false,
+    is_globbable: bool = false,
+    read: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const u8,
+    list_elements: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const outgoing.PathElement = null,
+    context: ?*anyopaque = null,
+};
+
+pub const ModuleReader = struct {
+    scheme: []const u8,
+    has_hierarchical_uris: bool = false,
+    is_globbable: bool = false,
+    is_local: bool = false,
+    read: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const u8,
+    list_elements: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, uri: []const u8) anyerror![]const outgoing.PathElement = null,
+    context: ?*anyopaque = null,
+};
 
 pub const Options = struct {
     pkl_argv: []const []const u8 = &.{ "pkl", "server" },
@@ -41,6 +63,8 @@ pub const Options = struct {
     http: ?*outgoing.Http = null,
     external_module_readers: ?std.StringHashMap(outgoing.ExternalReader) = null,
     external_resource_readers: ?std.StringHashMap(outgoing.ExternalReader) = null,
+    resource_readers: ?[]const ResourceReader = null,
+    module_readers: ?[]const ModuleReader = null,
     trace_mode: ?[]const u8 = null,
 
     /// A conservative preset for evaluating content that should not be able to
@@ -58,6 +82,8 @@ allocator: std.mem.Allocator,
 transport: ?*Transport,
 evaluator_id: i64,
 next_request_id: i64,
+resource_readers: []const ResourceReader = &.{},
+module_readers: []const ModuleReader = &.{},
 request_mutex: std.Io.Mutex = .init,
 last_error: ?[]u8 = null,
 
@@ -73,6 +99,8 @@ pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluat
         .transport = transport,
         .evaluator_id = 0,
         .next_request_id = 1,
+        .resource_readers = options.resource_readers orelse &.{},
+        .module_readers = options.module_readers orelse &.{},
     };
     errdefer self.clearLastErrorUnlocked();
 
@@ -164,6 +192,22 @@ pub fn evaluateExpressionRaw(
                     else => log.info("Pkl: {s} ({s})", .{ entry.message, entry.frame_uri }),
                 }
             },
+            .read_resource => |req| {
+                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
+                try self.handleReadResource(transport, req);
+            },
+            .read_module => |req| {
+                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
+                try self.handleReadModule(transport, req);
+            },
+            .list_resources => |req| {
+                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
+                try self.handleListResources(transport, req);
+            },
+            .list_modules => |req| {
+                if (req.evaluator_id != self.evaluator_id) return error.UnexpectedEvaluatorId;
+                try self.handleListModules(transport, req);
+            },
             .close_external_process => return error.ExternalProcessClosed,
             else => return error.UnexpectedMessage,
         }
@@ -191,8 +235,39 @@ fn createUnlocked(self: *Evaluator, options: Options) !i64 {
     const transport = self.transport orelse return error.EvaluatorClosed;
     const request_id = self.nextRequestIdUnlocked();
 
+    var client_resource_readers: ?[]outgoing.ResourceReader = null;
+    if (options.resource_readers) |readers| {
+        const out_readers = try self.allocator.alloc(outgoing.ResourceReader, readers.len);
+        for (readers, 0..) |r, i| {
+            out_readers[i] = .{
+                .scheme = r.scheme,
+                .has_hierarchical_uris = r.has_hierarchical_uris,
+                .is_globbable = r.is_globbable,
+            };
+        }
+        client_resource_readers = out_readers;
+    }
+    defer if (client_resource_readers) |r| self.allocator.free(r);
+
+    var client_module_readers: ?[]outgoing.ModuleReader = null;
+    if (options.module_readers) |readers| {
+        const out_readers = try self.allocator.alloc(outgoing.ModuleReader, readers.len);
+        for (readers, 0..) |r, i| {
+            out_readers[i] = .{
+                .scheme = r.scheme,
+                .has_hierarchical_uris = r.has_hierarchical_uris,
+                .is_globbable = r.is_globbable,
+                .is_local = r.is_local,
+            };
+        }
+        client_module_readers = out_readers;
+    }
+    defer if (client_module_readers) |r| self.allocator.free(r);
+
     try transport.send(.{ .create_evaluator = .{
         .request_id = request_id,
+        .client_resource_readers = client_resource_readers,
+        .client_module_readers = client_module_readers,
         .allowed_modules = options.allowed_modules,
         .allowed_resources = options.allowed_resources,
         .module_paths = options.module_paths,
@@ -228,6 +303,145 @@ fn createUnlocked(self: *Evaluator, options: Options) !i64 {
             .close_external_process => return error.ExternalProcessClosed,
             else => return error.UnexpectedMessage,
         }
+    }
+}
+
+fn uriScheme(uri: []const u8) ?[]const u8 {
+    const idx = std.mem.indexOfScalar(u8, uri, ':') orelse return null;
+    return uri[0..idx];
+}
+
+fn findResourceReader(self: *const Evaluator, uri: []const u8) ?ResourceReader {
+    const scheme = uriScheme(uri) orelse return null;
+    for (self.resource_readers) |reader| {
+        if (std.mem.eql(u8, reader.scheme, scheme)) return reader;
+    }
+    return null;
+}
+
+fn findModuleReader(self: *const Evaluator, uri: []const u8) ?ModuleReader {
+    const scheme = uriScheme(uri) orelse return null;
+    for (self.module_readers) |reader| {
+        if (std.mem.eql(u8, reader.scheme, scheme)) return reader;
+    }
+    return null;
+}
+
+fn handleReadResource(self: *Evaluator, transport: *Transport, req: incoming.ReadResource) !void {
+    const reader = self.findResourceReader(req.uri) orelse {
+        try transport.send(.{ .read_resource_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "No resource reader registered for URI scheme",
+        } });
+        return;
+    };
+
+    if (reader.read(reader.context, self.allocator, req.uri)) |contents| {
+        try transport.send(.{ .read_resource_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .contents = contents,
+        } });
+    } else |err| {
+        try transport.send(.{ .read_resource_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = @errorName(err),
+        } });
+    }
+}
+
+fn handleReadModule(self: *Evaluator, transport: *Transport, req: incoming.ReadModule) !void {
+    const reader = self.findModuleReader(req.uri) orelse {
+        try transport.send(.{ .read_module_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "No module reader registered for URI scheme",
+        } });
+        return;
+    };
+
+    if (reader.read(reader.context, self.allocator, req.uri)) |contents| {
+        try transport.send(.{ .read_module_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .contents = contents,
+        } });
+    } else |err| {
+        try transport.send(.{ .read_module_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = @errorName(err),
+        } });
+    }
+}
+
+fn handleListResources(self: *Evaluator, transport: *Transport, req: incoming.ListResources) !void {
+    const reader = self.findResourceReader(req.uri) orelse {
+        try transport.send(.{ .list_resources_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "No resource reader registered for URI scheme",
+        } });
+        return;
+    };
+
+    const list_fn = reader.list_elements orelse {
+        try transport.send(.{ .list_resources_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "Resource reader does not support listing elements",
+        } });
+        return;
+    };
+
+    if (list_fn(reader.context, self.allocator, req.uri)) |elements| {
+        try transport.send(.{ .list_resources_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .path_elements = elements,
+        } });
+    } else |err| {
+        try transport.send(.{ .list_resources_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = @errorName(err),
+        } });
+    }
+}
+
+fn handleListModules(self: *Evaluator, transport: *Transport, req: incoming.ListModules) !void {
+    const reader = self.findModuleReader(req.uri) orelse {
+        try transport.send(.{ .list_modules_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "No module reader registered for URI scheme",
+        } });
+        return;
+    };
+
+    const list_fn = reader.list_elements orelse {
+        try transport.send(.{ .list_modules_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = "Module reader does not support listing elements",
+        } });
+        return;
+    };
+
+    if (list_fn(reader.context, self.allocator, req.uri)) |elements| {
+        try transport.send(.{ .list_modules_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .path_elements = elements,
+        } });
+    } else |err| {
+        try transport.send(.{ .list_modules_response = .{
+            .request_id = req.request_id,
+            .evaluator_id = self.evaluator_id,
+            .@"error" = @errorName(err),
+        } });
     }
 }
 
@@ -369,4 +583,3 @@ test "fileUriFromPath resolves relative path against cwd" {
     try std.testing.expect(std.mem.startsWith(u8, uri, "file:///"));
     try std.testing.expect(std.mem.endsWith(u8, uri, "/config/My%20File.pkl"));
 }
-

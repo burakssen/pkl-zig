@@ -136,7 +136,7 @@ pub const PathElement = struct {
 pub const ListResourcesResponse = struct {
     request_id: i64,
     evaluator_id: i64,
-    path_elements: ?[]PathElement = null,
+    path_elements: ?[]const PathElement = null,
     @"error": ?[]const u8 = null,
 };
 
