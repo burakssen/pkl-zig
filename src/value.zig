@@ -18,6 +18,7 @@ const code_class = 0x0c;
 const code_type_alias = 0x0d;
 const code_function = 0x0e;
 const code_bytes = 0x0f;
+const code_reference = 0x20;
 
 const code_object_member_property = 0x10;
 const code_object_member_entry = 0x11;
@@ -140,6 +141,45 @@ pub const TypeAlias = struct {
 /// function marker and intentionally exposes no callable representation.
 pub const Function = struct {};
 
+/// Lossless host representation of `pkl.ref#Reference`.
+///
+/// The binary format carries a typed domain value, arbitrary data, and an
+/// ordered list of typed `pkl.ref#Access` values. `Value` is intentionally used
+/// for all three pieces so future domain/access shapes remain forward-compatible.
+pub const Reference = struct {
+    domain: *Value,
+    data: *Value,
+    path: []Value,
+
+    pub fn deinit(self: *Reference, allocator: std.mem.Allocator) void {
+        self.domain.deinit(allocator);
+        allocator.destroy(self.domain);
+        self.data.deinit(allocator);
+        allocator.destroy(self.data);
+        for (self.path) |*access| access.deinit(allocator);
+        if (self.path.len != 0) allocator.free(self.path);
+        self.* = undefined;
+    }
+
+    pub fn clone(self: Reference, allocator: std.mem.Allocator) !Reference {
+        const domain = try allocator.create(Value);
+        errdefer allocator.destroy(domain);
+        domain.* = try self.domain.clone(allocator);
+        errdefer domain.deinit(allocator);
+
+        const data = try allocator.create(Value);
+        errdefer allocator.destroy(data);
+        data.* = try self.data.clone(allocator);
+        errdefer data.deinit(allocator);
+
+        return .{
+            .domain = domain,
+            .data = data,
+            .path = try cloneValues(allocator, self.path),
+        };
+    }
+};
+
 pub const IntSeq = struct {
     start: i64,
     end: i64,
@@ -225,6 +265,7 @@ pub const Value = union(enum) {
     class: Class,
     type_alias: TypeAlias,
     function: Function,
+    reference: Reference,
 
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -248,6 +289,7 @@ pub const Value = union(enum) {
             .regex => |regex| if (regex.pattern.len != 0) allocator.free(regex.pattern),
             .class => |class| deinitClass(allocator, class),
             .type_alias => |alias| deinitTypeAlias(allocator, alias),
+            .reference => |*reference| reference.deinit(allocator),
             else => {},
         }
         self.* = undefined;
@@ -275,6 +317,7 @@ pub const Value = union(enum) {
             .class => |class| .{ .class = try cloneClass(allocator, class) },
             .type_alias => |alias| .{ .type_alias = try cloneTypeAlias(allocator, alias) },
             .function => .{ .function = .{} },
+            .reference => |reference| .{ .reference = try reference.clone(allocator) },
         };
     }
 };
@@ -339,6 +382,10 @@ pub fn fromValue(comptime T: type, allocator: std.mem.Allocator, value: Value) D
         else => DecodeError.UnsupportedType,
     };
     if (T == Function) return if (value == .function) .{} else DecodeError.UnsupportedType;
+    if (T == Reference) return switch (value) {
+        .reference => |reference| reference.clone(allocator),
+        else => DecodeError.UnsupportedType,
+    };
     if (T == IntSeq) return if (value == .int_seq) value.int_seq else DecodeError.UnsupportedType;
     if (T == Duration) return if (value == .duration) value.duration else DecodeError.UnsupportedType;
     if (T == DataSize) return if (value == .data_size) value.data_size else DecodeError.UnsupportedType;
@@ -430,6 +477,10 @@ pub fn deinitDecoded(comptime T: type, allocator: std.mem.Allocator, value: *T) 
     if (T == TypeAlias) {
         deinitTypeAlias(allocator, value.*);
         value.* = undefined;
+        return;
+    }
+    if (T == Reference) {
+        value.deinit(allocator);
         return;
     }
     if (T == Function or T == IntSeq or T == Duration or T == DataSize or T == DurationUnit or T == DataSizeUnit) {
@@ -643,6 +694,7 @@ fn fromArrayPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) Deco
         code_type_alias => decodeTypeAlias(allocator, payload, len),
         code_function => .{ .function = .{} },
         code_bytes => decodeBytes(allocator, payload, len),
+        code_reference => decodeReference(allocator, payload, len),
         else => DecodeError.UnknownPklType,
     };
 }
@@ -761,6 +813,51 @@ fn decodePair(
     second.* = try fromPayload(allocator, try payload.getArrElement(2));
 
     return .{ .pair = .{ .first = first, .second = second } };
+}
+
+fn decodeReference(
+    allocator: std.mem.Allocator,
+    payload: msgpack.Payload,
+    len: usize,
+) DecodeError!Value {
+    if (len < 4) return DecodeError.InvalidPklValue;
+
+    const domain = try allocator.create(Value);
+    errdefer allocator.destroy(domain);
+    domain.* = try fromPayload(allocator, try payload.getArrElement(1));
+    errdefer domain.deinit(allocator);
+
+    const data = try allocator.create(Value);
+    errdefer allocator.destroy(data);
+    data.* = try fromPayload(allocator, try payload.getArrElement(2));
+    errdefer data.deinit(allocator);
+
+    const path_payload = try payload.getArrElement(3);
+    const path_len = try path_payload.getArrLen();
+
+    // Preserve the library's canonical static empty-slice ownership convention,
+    // while keeping non-empty reference paths mutable and allocator-owned.
+    var path: []Value = &.{};
+    if (path_len != 0) {
+        path = try allocator.alloc(Value, path_len);
+    }
+
+    var initialized: usize = 0;
+    errdefer {
+        for (path[0..initialized]) |*access| access.deinit(allocator);
+        if (path.len != 0) allocator.free(path);
+    }
+
+    for (0..path_len) |index| {
+        path[index] = try fromPayload(allocator, try path_payload.getArrElement(index));
+        initialized += 1;
+    }
+
+    return .{ .reference = .{
+        .domain = domain,
+        .data = data,
+        .path = path,
+    } };
 }
 
 fn fromMapPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) DecodeError!Value {
@@ -1141,6 +1238,38 @@ test "decode function marker without silently treating it as a list" {
 
     const value = try fromPayload(allocator, payload);
     try std.testing.expect(value == .function);
+}
+
+test "decode Pkl 0.32 Reference" {
+    const allocator = std.testing.allocator;
+
+    const domain_members = try msgpack.Payload.arrPayload(0, allocator);
+    var domain = try msgpack.Payload.arrPayload(4, allocator);
+    try domain.setArrElement(0, msgpack.Payload.intToPayload(code_object));
+    try domain.setArrElement(1, try msgpack.Payload.strToPayload("MyDomain", allocator));
+    try domain.setArrElement(2, try msgpack.Payload.strToPayload("file:///domain.pkl", allocator));
+    try domain.setArrElement(3, domain_members);
+
+    const path = try msgpack.Payload.arrPayload(0, allocator);
+    var payload = try msgpack.Payload.arrPayload(4, allocator);
+    defer payload.free(allocator);
+    try payload.setArrElement(0, msgpack.Payload.intToPayload(code_reference));
+    try payload.setArrElement(1, domain);
+    try payload.setArrElement(2, try msgpack.Payload.strToPayload("taskA", allocator));
+    try payload.setArrElement(3, path);
+
+    var decoded = try fromPayload(allocator, payload);
+    defer decoded.deinit(allocator);
+
+    try std.testing.expect(decoded == .reference);
+    try std.testing.expect(decoded.reference.domain.* == .object);
+    try std.testing.expectEqualStrings("MyDomain", decoded.reference.domain.object.name);
+    try std.testing.expectEqualStrings("taskA", decoded.reference.data.string);
+    try std.testing.expectEqual(@as(usize, 0), decoded.reference.path.len);
+
+    var cloned = try fromValue(Reference, allocator, decoded);
+    defer deinitDecoded(Reference, allocator, &cloned);
+    try std.testing.expectEqualStrings("taskA", cloned.data.string);
 }
 
 test "unknown integer pkl marker is rejected" {

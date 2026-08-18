@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const message = @import("message");
+const outgoing = message.outgoing;
 const Transport = @import("transport");
 const value = @import("value.zig");
 const log = std.log.scoped(.@"pkl-zig|evaluator");
@@ -12,7 +13,17 @@ pub const Options = struct {
     allowed_modules: ?[]const []const u8 = &.{ "pkl:", "repl:", "file:", "package:", "projectpackage:", "https:" },
     allowed_resources: ?[]const []const u8 = &.{ "file:", "package:", "projectpackage:", "https:" },
     module_paths: ?[]const []const u8 = null,
+    env: ?std.StringHashMap([]const u8) = null,
+    properties: ?std.StringHashMap([]const u8) = null,
+    timeout_seconds: ?i64 = null,
+    root_dir: ?[]const u8 = null,
+    cache_dir: ?[]const u8 = null,
     output_format: ?[]const u8 = null,
+    project: ?*outgoing.Project = null,
+    http: ?*outgoing.Http = null,
+    external_module_readers: ?std.StringHashMap(outgoing.ExternalReader) = null,
+    external_resource_readers: ?std.StringHashMap(outgoing.ExternalReader) = null,
+    trace_mode: ?[]const u8 = null,
 
     /// A conservative preset for evaluating content that should not be able to
     /// read local files, packages, project packages, or the network.
@@ -167,7 +178,17 @@ fn createUnlocked(self: *Evaluator, options: Options) !i64 {
         .allowed_modules = options.allowed_modules,
         .allowed_resources = options.allowed_resources,
         .module_paths = options.module_paths,
+        .env = options.env,
+        .properties = options.properties,
+        .timeout_seconds = options.timeout_seconds,
+        .root_dir = options.root_dir,
+        .cache_dir = options.cache_dir,
         .output_format = options.output_format,
+        .project = options.project,
+        .http = options.http,
+        .external_module_readers = options.external_module_readers,
+        .external_resource_readers = options.external_resource_readers,
+        .trace_mode = options.trace_mode,
     } });
 
     while (true) {

@@ -2,6 +2,7 @@
 module pkl.zig.internal.typegen
 
 import "pkl:reflect"
+import "pkl:ref"
 
 import "Type.pkl"
 import "ZigMapping.pkl"
@@ -64,6 +65,8 @@ function generateDeclaredType(
       mapped.type
     else if (mappedTypes.containsKey(reflectee))
       mappedTypes[reflectee]
+    else if (reflectee == ref.Reference)
+      new Type.Declared { typeName = "pkl.Reference" }
     else if (referent is reflect.TypeAlias)
       generateTypeWithGenerics(referent.referent, enclosing, seenMappings, genericTypes)
     else if (reflectee == List || reflectee == Listing || reflectee == Set)
