@@ -175,12 +175,19 @@ pub fn build(b: *std.Build) void {
             mod.addImport(pkg.name, snippet_modules[i]);
         }
     }
+    const snippet_fixture_options = b.addOptions();
+    snippet_fixture_options.addOption(
+        []const u8,
+        "runtime_fixture_root",
+        b.pathFromRoot("codegen/snippet-tests/runtime"),
+    );
     const snippet_test_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("codegen/snippet-tests/test.zig"),
         .imports = &.{.{ .name = "pkl", .module = modules.pkl }},
     });
+    snippet_test_mod.addOptions("snippet_build_options", snippet_fixture_options);
     for (&snippet_packages, 0..) |pkg, i| {
         snippet_test_mod.addImport(pkg.name, snippet_modules[i]);
     }

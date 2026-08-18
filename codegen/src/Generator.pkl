@@ -68,6 +68,9 @@ local function classMappingForMember(type: reflect.Type, mappings: List<ZigMappi
       if (mapped is ZigMapping.Class) mapped else null
   else
     null
+// Typed class unions stay deliberately narrow: every member must resolve to a
+// generated class in the same Zig package, with a distinct normalized tag.
+// Other unions continue through the generic type fallback.
 local function isClassUnion(decl: reflect.TypeDeclaration, mappings: List<ZigMapping>): Boolean =
   decl is reflect.TypeAlias
     && let (referent = decl.referent)

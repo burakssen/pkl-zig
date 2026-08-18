@@ -1,5 +1,6 @@
 const std = @import("std");
 const pkl = @import("pkl");
+const snippet_build_options = @import("snippet_build_options");
 
 const bugholder = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/bugholder");
 const cyclicmodule = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/cyclicmodule");
@@ -23,6 +24,22 @@ const support_lib2 = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests
 const support_lib3 = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/support/lib3");
 const union_pkg = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/union");
 const unionnamekeyword = @import("github.com/burakssen/pkl-zig/codegen/snippet-tests/output/unionnamekeyword");
+
+fn runtimeFixturePath(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
+    return std.fs.path.join(
+        allocator,
+        &.{ snippet_build_options.runtime_fixture_root, relative },
+    );
+}
+
+fn loadUnionFixture(evaluator: anytype, path: []const u8) !union_pkg.Union {
+    return union_pkg.Union.loadFromPathWithEvaluator(evaluator, path) catch |err| {
+        if (evaluator.lastError()) |diagnostic| {
+            std.debug.print("Pkl evaluation failed:\n{s}\n", .{diagnostic});
+        }
+        return err;
+    };
+}
 
 test "generated snippet packages compile" {
     _ = bugholder.BugHolder;
@@ -141,8 +158,47 @@ test "generated class unions decode and deinit typed payloads" {
     }
 }
 
-test "generated module load helpers support evaluator reuse" {
-    try std.testing.expect(@hasDecl(union_pkg.Union, "loadFromPath"));
-    try std.testing.expect(@hasDecl(union_pkg.Union, "loadFromPathWithEvaluator"));
-    try std.testing.expect(@hasDecl(union_pkg.Union, "load"));
+test "generated class unions decode real pkl values" {
+    const allocator = std.testing.allocator;
+    const path = try runtimeFixturePath(allocator, "UnionValues.pkl");
+    defer allocator.free(path);
+
+    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    defer evaluator.deinit();
+
+    var config = try loadUnionFixture(&evaluator, path);
+    defer config.deinit(allocator);
+
+    const directory = config.directory orelse return error.MissingDirectory;
+    try std.testing.expectEqual(@as(usize, 2), directory.len);
+
+    switch (directory[0]) {
+        .file => |file| try std.testing.expectEqualStrings("readme.txt", file.name),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (directory[1]) {
+        .directory => |dir| try std.testing.expectEqualStrings("docs", dir.name),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "generated load helpers reuse manager evaluators" {
+    const allocator = std.testing.allocator;
+    const path = try runtimeFixturePath(allocator, "UnionValues.pkl");
+    defer allocator.free(path);
+
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+
+    var evaluator = try manager.newEvaluator(.{});
+    defer evaluator.deinit();
+
+    var first = try loadUnionFixture(&evaluator, path);
+    defer first.deinit(allocator);
+    var second = try loadUnionFixture(&evaluator, path);
+    defer second.deinit(allocator);
+
+    try std.testing.expectEqualStrings("London", first.city);
+    try std.testing.expectEqualStrings("London", second.city);
+    try std.testing.expectEqual(.san_mateo, first.county);
 }

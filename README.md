@@ -163,7 +163,12 @@ Each generated package has:
 - an `index.zig`
 - generated structs for modules and classes
 - generated enums for string-literal unions when possible
-- module struct helpers such as `loadFromPath` and `load`
+- generated tagged unions for named, class-only unions when every class is in the same Zig package and the normalized tags are distinct
+- module struct helpers such as `loadFromPath`, `loadFromPathWithEvaluator`, and `load`
+
+Class-union generation is intentionally narrow. Heterogeneous unions, unions that
+span generated Zig packages, and unions whose member names collide after Zig tag
+normalization continue to use the generic `pkl.Value` fallback.
 
 ### Build Integration
 
@@ -226,7 +231,8 @@ and `zig build codegen-snippet-test` require Pkl 0.32.1 or a compatible `pkl`
 binary on `PATH`.
 
 `zig build codegen-snippet-test` regenerates snippet fixtures, compiles the
-generated packages, and checks expected codegen failures.
+generated packages, checks expected codegen failures, and exercises generated
+class-union decoding and evaluator-reusing load helpers against `pkl server`.
 
 ## Status
 

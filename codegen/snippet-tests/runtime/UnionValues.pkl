@@ -1,0 +1,17 @@
+amends "../input/Unions.pkl"
+
+foo = "runtime-fixture"
+
+city = "London"
+county = "San Mateo"
+noodle = "拉面"
+disposition = "prod"
+
+directory = new Listing {
+  new File {
+    name = "readme.txt"
+  }
+  new Directory {
+    name = "docs"
+  }
+}
