@@ -9,13 +9,13 @@ Experimental Zig bindings for [Pkl](https://pkl-lang.org/).
 - runtime decoding for Pkl values
 - experimental Pkl-to-Zig code generation
 
-The current baseline is Zig 0.16.0 and Pkl 0.31.1. The APIs are still
-experimental.
+The current baseline is Zig 0.16.0 and Pkl 0.32.1. The APIs are still
+experimental. Use the `v0.31` tag when targeting Pkl 0.31.x.
 
 ## Prerequisites
 
 - Zig 0.16.0
-- Pkl 0.31.1 on `PATH` for integration tests, examples, and code generation
+- Pkl 0.32.1 on `PATH` for integration tests, examples, and code generation
 
 ## Install
 
@@ -195,7 +195,7 @@ zig build codegen-snippet-test
 
 `zig build test` runs fast unit tests and skips tests that spawn `pkl server`.
 `zig build integration-test`, `zig build run`, `zig build run-codegen-example`,
-and `zig build codegen-snippet-test` require Pkl 0.31.1 or a compatible `pkl`
+and `zig build codegen-snippet-test` require Pkl 0.32.1 or a compatible `pkl`
 binary on `PATH`.
 
 `zig build codegen-snippet-test` regenerates snippet fixtures, compiles the
