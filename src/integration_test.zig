@@ -212,3 +212,91 @@ test "in-process custom ResourceReader propagates read error" {
     try std.testing.expect(evaluator.lastError() != null);
     try std.testing.expect(std.mem.indexOf(u8, evaluator.lastError().?, "ResourceNotFound") != null);
 }
+
+test "EvaluatorManager multiplexes multiple evaluators on a single process" {
+    const allocator = std.testing.allocator;
+
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+
+    var eval1 = try manager.newEvaluator(.{});
+    defer eval1.deinit();
+
+    var props = std.StringHashMap([]const u8).init(allocator);
+    defer props.deinit();
+    try props.put("greeting", "Hello from eval2");
+
+    var eval2 = try manager.newEvaluator(.{
+        .properties = props,
+    });
+    defer eval2.deinit();
+
+    try std.testing.expect(eval1.evaluator_id != eval2.evaluator_id);
+
+    // Evaluate on eval1
+    {
+        const raw = try eval1.evaluateExpressionRaw("pkl:base", "10 + 20");
+        defer allocator.free(raw);
+        const res = try pkl.decode(i64, allocator, raw);
+        try std.testing.expectEqual(@as(i64, 30), res);
+    }
+
+    // Evaluate on eval2 using its custom property
+    {
+        const raw = try eval2.evaluateExpressionRaw("pkl:base", "read(\"prop:greeting\")");
+        defer allocator.free(raw);
+        var text = try pkl.decode([]const u8, allocator, raw);
+        defer pkl.deinit([]const u8, allocator, &text);
+        try std.testing.expectEqualStrings("Hello from eval2", text);
+    }
+
+    // Close eval1 explicitly
+    try eval1.close();
+
+    // eval2 still works after eval1 is closed
+    {
+        const raw = try eval2.evaluateExpressionRaw("pkl:base", "5 * 5");
+        defer allocator.free(raw);
+        const res = try pkl.decode(i64, allocator, raw);
+        try std.testing.expectEqual(@as(i64, 25), res);
+    }
+
+    // Spawn a 3rd evaluator on the same manager
+    var eval3 = try manager.newEvaluator(.{});
+    defer eval3.deinit();
+
+    {
+        const raw = try eval3.evaluateExpressionRaw("pkl:base", "100 - 1");
+        defer allocator.free(raw);
+        const res = try pkl.decode(i64, allocator, raw);
+        try std.testing.expectEqual(@as(i64, 99), res);
+    }
+}
+
+test "EvaluatorManager evaluates PklProject" {
+    const allocator = std.testing.allocator;
+
+    const project_dir = try fixturePath(allocator, "project");
+    defer allocator.free(project_dir);
+
+    var project = try pkl.Project.load(std.testing.io, allocator, project_dir, .{});
+    defer project.deinit(allocator);
+
+    var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
+    defer manager.deinit();
+
+    var evaluator = try manager.newProjectEvaluator(&project, .{});
+    defer evaluator.deinit();
+
+    const module_path = try std.fs.path.join(allocator, &.{ project_dir, "main.pkl" });
+    defer allocator.free(module_path);
+    const module_uri = try pkl.Evaluator.fileUriFromPath(std.testing.io, allocator, module_path);
+    defer allocator.free(module_uri);
+
+    const raw = try evaluator.evaluateExpressionRaw(module_uri, "result");
+    defer allocator.free(raw);
+
+    var result = try pkl.decode([]const u8, allocator, raw);
+    defer pkl.deinit([]const u8, allocator, &result);
+    try std.testing.expectEqualStrings("from-module-path:from-project", result);
+}

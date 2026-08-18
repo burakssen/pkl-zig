@@ -64,6 +64,25 @@ pub const Project = struct {
         // Evaluator.init serializes CreateEvaluator before it returns.
         return Evaluator.init(io, allocator, options);
     }
+
+    /// Creates an evaluator on a shared EvaluatorManager using resolved project settings.
+    pub fn newEvaluatorWithManager(
+        self: *const Project,
+        manager: anytype,
+        base: Evaluator.Options,
+    ) !Evaluator {
+        var arena = std.heap.ArenaAllocator.init(manager.allocator);
+        defer arena.deinit();
+
+        var options = base;
+        try applyResolvedSettings(arena.allocator(), &self.resolved_evaluator_settings, &options);
+
+        const wire_project = try arena.allocator().create(outgoing.Project);
+        wire_project.* = try buildWireProject(arena.allocator(), self);
+        options.project = wire_project;
+
+        return manager.newEvaluator(options);
+    }
 };
 
 pub const Package = struct {

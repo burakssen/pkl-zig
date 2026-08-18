@@ -80,12 +80,18 @@ pub const Options = struct {
 io: std.Io,
 allocator: std.mem.Allocator,
 transport: ?*Transport,
+owns_transport: bool = true,
 evaluator_id: i64,
 next_request_id: i64,
 resource_readers: []const ResourceReader = &.{},
 module_readers: []const ModuleReader = &.{},
-request_mutex: std.Io.Mutex = .init,
+request_mutex: ?*std.Io.Mutex = null,
+local_mutex: std.Io.Mutex = .init,
 last_error: ?[]u8 = null,
+
+fn mutex(self: *Evaluator) *std.Io.Mutex {
+    return self.request_mutex orelse &self.local_mutex;
+}
 
 pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluator {
     const transport = try Transport.initWithOptions(io, allocator, .{ .pkl_argv = options.pkl_argv });
@@ -97,10 +103,36 @@ pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluat
         .io = io,
         .allocator = allocator,
         .transport = transport,
+        .owns_transport = true,
         .evaluator_id = 0,
         .next_request_id = 1,
         .resource_readers = options.resource_readers orelse &.{},
         .module_readers = options.module_readers orelse &.{},
+        .request_mutex = null,
+    };
+    errdefer self.clearLastErrorUnlocked();
+
+    self.evaluator_id = try self.createUnlocked(options);
+    return self;
+}
+
+pub fn initWithTransport(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    transport: *Transport,
+    shared_mutex: ?*std.Io.Mutex,
+    options: Options,
+) !Evaluator {
+    var self = Evaluator{
+        .io = io,
+        .allocator = allocator,
+        .transport = transport,
+        .owns_transport = false,
+        .evaluator_id = 0,
+        .next_request_id = 1,
+        .resource_readers = options.resource_readers orelse &.{},
+        .module_readers = options.module_readers orelse &.{},
+        .request_mutex = shared_mutex,
     };
     errdefer self.clearLastErrorUnlocked();
 
@@ -119,15 +151,15 @@ pub fn deinit(self: *Evaluator) void {
 /// Send Pkl's one-way CloseEvaluator message and wait until the transport's
 /// writer has written that frame before tearing down the child process.
 pub fn close(self: *Evaluator) !void {
-    try self.request_mutex.lock(self.io);
-    defer self.request_mutex.unlock(self.io);
+    try self.mutex().lock(self.io);
+    defer self.mutex().unlock(self.io);
 
     const transport = self.transport orelse return;
 
     // Make the state closed before doing any fallible work. Even when flushing
     // the close frame fails, no later operation may dereference this transport.
     self.transport = null;
-    defer transport.deinit();
+    defer if (self.owns_transport) transport.deinit();
 
     try transport.sendAndFlush(.{
         .close_evaluator = .{ .evaluator_id = self.evaluator_id },
@@ -153,8 +185,8 @@ pub fn evaluateExpressionRaw(
     module_uri: []const u8,
     expr: ?[]const u8,
 ) ![]u8 {
-    try self.request_mutex.lock(self.io);
-    defer self.request_mutex.unlock(self.io);
+    try self.mutex().lock(self.io);
+    defer self.mutex().unlock(self.io);
 
     self.clearLastErrorUnlocked();
     const transport = self.transport orelse return error.EvaluatorClosed;
@@ -231,6 +263,9 @@ pub fn load(self: *Evaluator, comptime T: type, module_uri: []const u8) !T {
 }
 
 fn createUnlocked(self: *Evaluator, options: Options) !i64 {
+    try self.mutex().lock(self.io);
+    defer self.mutex().unlock(self.io);
+
     self.clearLastErrorUnlocked();
     const transport = self.transport orelse return error.EvaluatorClosed;
     const request_id = self.nextRequestIdUnlocked();

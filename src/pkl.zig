@@ -1,6 +1,8 @@
 pub const message = @import("message");
 pub const Transport = @import("transport");
 pub const Evaluator = @import("evaluator.zig");
+pub const manager = @import("manager.zig");
+pub const EvaluatorManager = manager.EvaluatorManager;
 pub const ResourceReader = Evaluator.ResourceReader;
 pub const ModuleReader = Evaluator.ModuleReader;
 pub const PathElement = message.outgoing.PathElement;
