@@ -1,8 +1,7 @@
 const std = @import("std");
 const msgpack = @import("msgpack");
-
 const message = @import("message");
-const Transport = @import("transport.zig");
+const Transport = @import("process.zig");
 
 const log = std.log.scoped(.@"pkl-zig|transport|io");
 
