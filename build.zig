@@ -1,8 +1,13 @@
 const std = @import("std");
+const libpkl_build = @import("build/libpkl.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const use_process = b.option(bool, "process", "Use child-process pkl server transport instead of native libpkl") orelse false;
+    const use_libpkl = !use_process;
+    const force_rebuild_libpkl = b.option(bool, "rebuild-libpkl", "Force rebuilding libpkl via Gradle even if already cached") orelse false;
 
     const msgpack_dep = b.dependency("zig_msgpack", .{
         .target = target,
@@ -13,8 +18,20 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.option(bool, "integration", "Run tests that spawn pkl server") orelse false;
 
     // reusable module factory avoids duplicate module definitions
-    const modules = createModules(b, target, optimize, msgpack_mod, integration_tests);
-    _ = b.addModule("pkl", .{
+    const modules = createModules(b, target, optimize, msgpack_mod, integration_tests, use_libpkl);
+
+    const libpkl = if (use_libpkl) libpkl_build.add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .force_rebuild = force_rebuild_libpkl,
+    }) else null;
+
+    if (libpkl) |lp| {
+        lp.link(modules.transport);
+        lp.link(modules.pkl);
+    }
+
+    const pkl_module = b.addModule("pkl", .{
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/pkl.zig"),
@@ -25,9 +42,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    if (libpkl) |lp| {
+        lp.link(pkl_module);
+    }
+
     const test_step = b.step("test", "Run pkl-zig tests");
     inline for (&.{ modules.message, modules.transport, modules.pkl }) |mod| {
         const mod_test = b.addTest(.{ .root_module = mod });
+        if (libpkl) |lp| if (lp.build_step) |s| mod_test.step.dependOn(s);
         const mod_cmd = b.addRunArtifact(mod_test);
         test_step.dependOn(&mod_cmd.step);
     }
@@ -44,6 +66,8 @@ pub fn build(b: *std.Build) void {
         .name = "example",
         .root_module = example_mod,
     });
+    b.installArtifact(example_exe);
+    if (libpkl) |lp| if (lp.build_step) |s| example_exe.step.dependOn(s);
 
     const run_step = b.step("run", "Run example");
     const run_cmd = b.addRunArtifact(example_exe);
@@ -69,13 +93,14 @@ pub fn build(b: *std.Build) void {
         .name = "codegen-example",
         .root_module = codegen_example_mod,
     });
+    if (libpkl) |lp| if (lp.build_step) |s| codegen_example_exe.step.dependOn(s);
     const run_codegen_example_step = b.step("run-codegen-example", "Generate and run typed config example");
     const run_codegen_example_cmd = b.addRunArtifact(codegen_example_exe);
     run_codegen_example_step.dependOn(&run_codegen_example_cmd.step);
 
     // Integration tests
     const integration_step = b.step("integration-test", "Run tests that spawn pkl server");
-    const integration_modules = createModules(b, target, optimize, msgpack_mod, true);
+    const integration_modules = createModules(b, target, optimize, msgpack_mod, true, use_libpkl);
 
     const integration_fixture_options = b.addOptions();
     integration_fixture_options.addOption(
@@ -85,6 +110,7 @@ pub fn build(b: *std.Build) void {
     );
 
     const integration_message_test = b.addTest(.{ .root_module = integration_modules.message });
+    if (libpkl) |lp| if (lp.build_step) |s| integration_message_test.step.dependOn(s);
     const integration_message_cmd = b.addRunArtifact(integration_message_test);
     integration_step.dependOn(&integration_message_cmd.step);
 
@@ -96,11 +122,21 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pkl", .module = integration_modules.pkl },
         },
     });
+    if (libpkl) |lp| {
+        lp.link(integration_modules.transport);
+        lp.link(integration_modules.pkl);
+        lp.link(integration_evaluator_mod);
+    }
     integration_evaluator_mod.addOptions(
         "integration_build_options",
         integration_fixture_options,
     );
-    const integration_evaluator_test = b.addTest(.{ .root_module = integration_evaluator_mod });
+    const test_filter = b.option([]const u8, "test-filter", "Filter test names");
+    const integration_evaluator_test = b.addTest(.{
+        .root_module = integration_evaluator_mod,
+        .filters = if (test_filter) |f| &.{f} else &.{},
+    });
+    if (libpkl) |lp| if (lp.build_step) |s| integration_evaluator_test.step.dependOn(s);
     const integration_evaluator_cmd = b.addRunArtifact(integration_evaluator_test);
     integration_step.dependOn(&integration_evaluator_cmd.step);
 
@@ -208,13 +244,14 @@ fn createModules(
     optimize: std.builtin.OptimizeMode,
     msgpack_mod: *std.Build.Module,
     integration_tests: bool,
+    use_libpkl: bool,
 ) struct {
     message: *std.Build.Module,
     transport: *std.Build.Module,
     pkl: *std.Build.Module,
 } {
-    const test_options = b.addOptions();
-    test_options.addOption(bool, "integration_tests", integration_tests);
+    const message_options = b.addOptions();
+    message_options.addOption(bool, "integration_tests", integration_tests);
 
     const message_mod = b.createModule(.{
         .target = target,
@@ -225,7 +262,10 @@ fn createModules(
         },
     });
     message_mod.addImport("message", message_mod);
-    message_mod.addOptions("build_options", test_options);
+    message_mod.addOptions("build_options", message_options);
+
+    const transport_options = b.addOptions();
+    transport_options.addOption(bool, "use_libpkl", use_libpkl);
 
     const transport_mod = b.createModule(.{
         .target = target,
@@ -236,6 +276,7 @@ fn createModules(
             .{ .name = "msgpack", .module = msgpack_mod },
         },
     });
+    transport_mod.addOptions("build_options", transport_options);
 
     const pkl_mod = b.createModule(.{
         .target = target,

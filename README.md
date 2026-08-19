@@ -189,7 +189,9 @@ Evaluator options also accept an optional evaluator-scoped `pkl.Logger` callback
 for Pkl evaluation logs. Logger callbacks run on the shared dispatcher and must
 not block or synchronously re-enter an evaluator that uses the same runtime.
 
-## Low-Level Transport
+## Transport
+
+`pkl-zig` defaults to the native in-process `libpkl` C-ABI transport, building and linking `libpkl.a` automatically. Alternatively, use child-process `pkl server` transport via `-Dprocess=true`.
 
 Use `pkl.Transport` directly when request IDs, evaluator IDs, response routing,
 or custom module/resource reader messages need to be managed by the caller:
@@ -216,8 +218,7 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-Use `Transport.initWithOptions` when the `pkl` executable is not on `PATH` or
-when stderr handling should differ from the default.
+Use `ProcessTransport` when explicitly managing a spawned `pkl server` subprocess.
 
 The repository's low-level example serves a custom `customfs:` module reader:
 

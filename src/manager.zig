@@ -1,5 +1,6 @@
 const std = @import("std");
-const Transport = @import("transport");
+const transport_mod = @import("transport");
+const Transport = transport_mod.Transport;
 const Runtime = @import("runtime.zig");
 const Evaluator = @import("evaluator.zig");
 const project_mod = @import("project.zig");

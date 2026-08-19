@@ -2,7 +2,8 @@ const std = @import("std");
 
 const message = @import("message");
 const outgoing = message.outgoing;
-const Transport = @import("transport");
+const transport_mod = @import("transport");
+const Transport = transport_mod.Transport;
 const Runtime = @import("runtime.zig");
 const value = @import("value.zig");
 const log = std.log.scoped(.@"pkl-zig|evaluator");

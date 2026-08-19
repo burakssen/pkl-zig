@@ -1,5 +1,8 @@
 pub const message = @import("message");
-pub const Transport = @import("transport");
+pub const transport = @import("transport");
+pub const Transport = transport.Transport;
+pub const ProcessTransport = transport.Process;
+pub const LibPklTransport = transport.LibPkl;
 pub const Evaluator = @import("evaluator.zig");
 pub const manager = @import("manager.zig");
 pub const EvaluatorManager = manager.EvaluatorManager;
