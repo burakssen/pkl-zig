@@ -226,6 +226,7 @@ pub fn build(b: *std.Build) void {
         snippet_test_mod.addImport(pkg.name, snippet_modules[i]);
     }
     const snippet_test = b.addTest(.{ .root_module = snippet_test_mod });
+    if (libpkl) |lp| if (lp.build_step) |s| snippet_test.step.dependOn(s);
     snippet_test.step.dependOn(&snippet_codegen_cmd.step);
     const snippet_test_cmd = b.addRunArtifact(snippet_test);
     snippet_step.dependOn(&snippet_test_cmd.step);

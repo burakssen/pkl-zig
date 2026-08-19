@@ -9,7 +9,6 @@
         .pkl = .{
             .url = "https://github.com/apple/pkl/archive/ac43bdbb175e8079d6df070ed76ae1aa8be6cf1a.tar.gz",
             .hash = "N-V-__8AAE5_dAFJjcWBvM-nIv47AbDoLb1ve58qo3jCZoPr",
-            .lazy = true,
         },
     },
     .minimum_zig_version = "0.16.0",
