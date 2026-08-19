@@ -22,10 +22,47 @@ jobs:
           version: 0.16.0
 
       - name: Check formatting
-        run: zig fmt --check build.zig src example
+        run: zig fmt --check build.zig build/libpkl.zig src example
+
+  libpkl:
+    name: Native libpkl
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache libpkl artifact
+        id: libpkl-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache/p/*/libpkl/build/native-libs
+            ~/.cache/zig/p/*/libpkl/build/native-libs
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: libpkl-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'build/libpkl.zig') }}
+          restore-keys: |
+            libpkl-${{ runner.os }}-
+
+      - name: Build libpkl
+        if: steps.libpkl-cache.outputs.cache-hit != 'true'
+        run: zig build
 
   unit:
     name: Unit
+    needs: [libpkl]
     runs-on: ubuntu-latest
 
     steps:
@@ -36,12 +73,21 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Restore libpkl artifact
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache/p/*/libpkl/build/native-libs
+            ~/.cache/zig/p/*/libpkl/build/native-libs
+          key: libpkl-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'build/libpkl.zig') }}
 
       - name: Run unit tests
         run: zig build test
 
   integration:
     name: Integration
+    needs: [libpkl]
     runs-on: ubuntu-latest
 
     steps:
@@ -52,6 +98,14 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Restore libpkl artifact
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache/p/*/libpkl/build/native-libs
+            ~/.cache/zig/p/*/libpkl/build/native-libs
+          key: libpkl-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'build/libpkl.zig') }}
 
       - name: Install Pkl
         run: |
@@ -64,8 +118,10 @@ jobs:
 
       - name: Run integration tests
         run: zig build integration-test
+
   codegen:
     name: Codegen
+    needs: [libpkl]
     runs-on: ubuntu-latest
 
     steps:
@@ -76,6 +132,14 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Restore libpkl artifact
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache/p/*/libpkl/build/native-libs
+            ~/.cache/zig/p/*/libpkl/build/native-libs
+          key: libpkl-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'build/libpkl.zig') }}
 
       - name: Install Pkl
         run: |
