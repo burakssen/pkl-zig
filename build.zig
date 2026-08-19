@@ -107,10 +107,8 @@ pub fn build(b: *std.Build) void {
     // Codegen snippet tests
     const snippet_step = b.step("codegen-snippet-test", "Generate and compile codegen snippet fixtures");
     const snippet_output_dir = "codegen/snippet-tests/output";
-    const snippet_clean_cmd = b.addSystemCommand(&.{ "rm", "-rf", "codegen/snippet-tests/output/github.com" });
     const snippet_codegen_cmd = b.addSystemCommand(&.{ "pkl", "run", "codegen/src/gen.pkl", "--output-path", snippet_output_dir });
     snippet_codegen_cmd.stdio = .inherit;
-    snippet_codegen_cmd.step.dependOn(&snippet_clean_cmd.step);
     const snippet_inputs = [_][]const u8{
         "codegen/snippet-tests/input/Classes.pkl",
         "codegen/snippet-tests/input/CyclicModule.pkl",
@@ -260,10 +258,8 @@ fn createModules(
 pub const CodegenOptions = struct {
     /// Optional single path to .pkl file or directory
     pkl_file: ?std.Build.LazyPath = null,
-    pkl_module: ?[]const u8 = null,
     /// Or multiple .pkl files
     pkl_files: []const std.Build.LazyPath = &.{},
-    pkl_modules: []const []const u8 = &.{},
 
     /// Target module package name (e.g. "appconfig"), used to locate <output_dir>/<package_name>/index.zig
     package_name: []const u8,
@@ -306,9 +302,7 @@ pub fn addCodegen(
         codegen_cmd.addArgs(options.extra_args);
     }
     if (options.pkl_file) |f| codegen_cmd.addFileArg(f);
-    if (options.pkl_module) |m| codegen_cmd.addFileArg(b.path(m));
     for (options.pkl_files) |f| codegen_cmd.addFileArg(f);
-    for (options.pkl_modules) |m| codegen_cmd.addFileArg(b.path(m));
     codegen_cmd.stdio = .inherit;
 
     const root_subpath = options.root_file orelse b.fmt("{s}/index.zig", .{options.package_name});

@@ -64,25 +64,8 @@ const Registration = struct {
     }
 };
 
-fn dupeResourceReaders(allocator: std.mem.Allocator, readers: []const ResourceReader) ![]ResourceReader {
-    const result = try allocator.alloc(ResourceReader, readers.len);
-    errdefer allocator.free(result);
-
-    var initialized: usize = 0;
-    errdefer {
-        for (result[0..initialized]) |reader| allocator.free(reader.scheme);
-    }
-    for (readers, 0..) |reader, index| {
-        const scheme = try allocator.dupe(u8, reader.scheme);
-        result[index] = reader;
-        result[index].scheme = scheme;
-        initialized += 1;
-    }
-    return result;
-}
-
-fn dupeModuleReaders(allocator: std.mem.Allocator, readers: []const ModuleReader) ![]ModuleReader {
-    const result = try allocator.alloc(ModuleReader, readers.len);
+fn dupeReaders(comptime T: type, allocator: std.mem.Allocator, readers: []const T) ![]T {
+    const result = try allocator.alloc(T, readers.len);
     errdefer allocator.free(result);
 
     var initialized: usize = 0;
@@ -255,12 +238,12 @@ pub fn registerEvaluator(
     const registration = try self.allocator.create(Registration);
     errdefer self.allocator.destroy(registration);
 
-    const resource_readers = try dupeResourceReaders(self.allocator, options.resource_readers);
+    const resource_readers = try dupeReaders(ResourceReader, self.allocator, options.resource_readers);
     errdefer {
         for (resource_readers) |reader| self.allocator.free(reader.scheme);
         self.allocator.free(resource_readers);
     }
-    const module_readers = try dupeModuleReaders(self.allocator, options.module_readers);
+    const module_readers = try dupeReaders(ModuleReader, self.allocator, options.module_readers);
     errdefer {
         for (module_readers) |reader| self.allocator.free(reader.scheme);
         self.allocator.free(module_readers);

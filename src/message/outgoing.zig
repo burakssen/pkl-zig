@@ -79,7 +79,6 @@ pub const CreateEvaluator = struct {
     request_id: i64,
     client_resource_readers: ?[]const ResourceReader = null,
     client_module_readers: ?[]const ModuleReader = null,
-    external_reader_commands: ?[]const []const []const u8 = null,
     module_paths: ?[]const []const u8 = null,
     env: ?std.StringHashMap([]const u8) = null,
     properties: ?std.StringHashMap([]const u8) = null,

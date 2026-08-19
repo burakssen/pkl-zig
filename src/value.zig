@@ -288,8 +288,8 @@ pub const Value = union(enum) {
             .string => |string| if (string.len != 0) allocator.free(string),
             .bytes => |bytes| if (bytes.len != 0) allocator.free(bytes),
             .regex => |regex| if (regex.pattern.len != 0) allocator.free(regex.pattern),
-            .class => |class| deinitClass(allocator, class),
-            .type_alias => |alias| deinitTypeAlias(allocator, alias),
+            .class => |class| deinitNamedEntity(allocator, class),
+            .type_alias => |alias| deinitNamedEntity(allocator, alias),
             .reference => |*reference| reference.deinit(allocator),
             else => {},
         }
@@ -315,8 +315,8 @@ pub const Value = union(enum) {
             .data_size => |value| .{ .data_size = value },
             .int_seq => |value| .{ .int_seq = value },
             .regex => |regex| .{ .regex = .{ .pattern = try cloneBytes(allocator, regex.pattern) } },
-            .class => |class| .{ .class = try cloneClass(allocator, class) },
-            .type_alias => |alias| .{ .type_alias = try cloneTypeAlias(allocator, alias) },
+            .class => |class| .{ .class = try cloneNamedEntity(Class, allocator, class) },
+            .type_alias => |alias| .{ .type_alias = try cloneNamedEntity(TypeAlias, allocator, alias) },
             .function => .{ .function = .{} },
             .reference => |reference| .{ .reference = try reference.clone(allocator) },
         };
@@ -375,11 +375,11 @@ pub fn fromValue(comptime T: type, allocator: std.mem.Allocator, value: Value) D
         else => DecodeError.UnsupportedType,
     };
     if (T == Class) return switch (value) {
-        .class => |class| cloneClass(allocator, class),
+        .class => |class| cloneNamedEntity(Class, allocator, class),
         else => DecodeError.UnsupportedType,
     };
     if (T == TypeAlias) return switch (value) {
-        .type_alias => |alias| cloneTypeAlias(allocator, alias),
+        .type_alias => |alias| cloneNamedEntity(TypeAlias, allocator, alias),
         else => DecodeError.UnsupportedType,
     };
     if (T == Function) return if (value == .function) .{} else DecodeError.UnsupportedType;
@@ -474,13 +474,8 @@ pub fn deinitDecoded(comptime T: type, allocator: std.mem.Allocator, value: *T) 
         value.* = undefined;
         return;
     }
-    if (T == Class) {
-        deinitClass(allocator, value.*);
-        value.* = undefined;
-        return;
-    }
-    if (T == TypeAlias) {
-        deinitTypeAlias(allocator, value.*);
+    if (T == Class or T == TypeAlias) {
+        deinitNamedEntity(allocator, value.*);
         value.* = undefined;
         return;
     }
@@ -655,6 +650,7 @@ fn isHashMap(comptime T: type) bool {
 }
 
 fn hashMapKeyType(comptime T: type) type {
+    if (@hasDecl(T, "Key")) return T.Key;
     const KV = @field(T, "KV");
     const info = @typeInfo(KV).@"struct";
     inline for (info.fields) |field| {
@@ -664,6 +660,7 @@ fn hashMapKeyType(comptime T: type) type {
 }
 
 fn hashMapValueType(comptime T: type) type {
+    if (@hasDecl(T, "Value")) return T.Value;
     const KV = @field(T, "KV");
     const info = @typeInfo(KV).@"struct";
     inline for (info.fields) |field| {
@@ -703,8 +700,8 @@ fn fromArrayPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) Deco
         code_pair => decodePair(allocator, payload, len),
         code_int_seq => decodeIntSeq(payload, len),
         code_regex => decodeRegex(allocator, payload, len),
-        code_class => decodeClass(allocator, payload, len),
-        code_type_alias => decodeTypeAlias(allocator, payload, len),
+        code_class => .{ .class = try decodeNamedEntity(Class, allocator, payload, len) },
+        code_type_alias => .{ .type_alias = try decodeNamedEntity(TypeAlias, allocator, payload, len) },
         code_function => .{ .function = .{} },
         code_bytes => decodeBytes(allocator, payload, len),
         code_reference => decodeReference(allocator, payload, len),
@@ -990,11 +987,12 @@ fn decodeObject(
     return .{ .object = object };
 }
 
-fn decodeClass(
+fn decodeNamedEntity(
+    comptime T: type,
     allocator: std.mem.Allocator,
     payload: msgpack.Payload,
     len: usize,
-) DecodeError!Value {
+) DecodeError!T {
     if (len < 3) return DecodeError.InvalidPklValue;
 
     const name_source = try (try payload.getArrElement(1)).asStr();
@@ -1004,24 +1002,7 @@ fn decodeClass(
     const module_uri_source = try (try payload.getArrElement(2)).asStr();
     const module_uri = if (module_uri_source.len == 0) "" else try allocator.dupe(u8, module_uri_source);
 
-    return .{ .class = .{ .name = name, .module_uri = module_uri } };
-}
-
-fn decodeTypeAlias(
-    allocator: std.mem.Allocator,
-    payload: msgpack.Payload,
-    len: usize,
-) DecodeError!Value {
-    if (len < 3) return DecodeError.InvalidPklValue;
-
-    const name_source = try (try payload.getArrElement(1)).asStr();
-    const name = if (name_source.len == 0) "" else try allocator.dupe(u8, name_source);
-    errdefer if (name.len != 0) allocator.free(name);
-
-    const module_uri_source = try (try payload.getArrElement(2)).asStr();
-    const module_uri = if (module_uri_source.len == 0) "" else try allocator.dupe(u8, module_uri_source);
-
-    return .{ .type_alias = .{ .name = name, .module_uri = module_uri } };
+    return .{ .name = name, .module_uri = module_uri };
 }
 
 fn cloneBytes(allocator: std.mem.Allocator, source: []const u8) CloneError![]const u8 {
@@ -1029,7 +1010,7 @@ fn cloneBytes(allocator: std.mem.Allocator, source: []const u8) CloneError![]con
     return allocator.dupe(u8, source);
 }
 
-fn cloneClass(allocator: std.mem.Allocator, source: Class) CloneError!Class {
+fn cloneNamedEntity(comptime T: type, allocator: std.mem.Allocator, source: T) CloneError!T {
     const module_uri = try cloneBytes(allocator, source.module_uri);
     errdefer if (module_uri.len != 0) allocator.free(module_uri);
 
@@ -1037,20 +1018,7 @@ fn cloneClass(allocator: std.mem.Allocator, source: Class) CloneError!Class {
     return .{ .module_uri = module_uri, .name = name };
 }
 
-fn cloneTypeAlias(allocator: std.mem.Allocator, source: TypeAlias) CloneError!TypeAlias {
-    const module_uri = try cloneBytes(allocator, source.module_uri);
-    errdefer if (module_uri.len != 0) allocator.free(module_uri);
-
-    const name = try cloneBytes(allocator, source.name);
-    return .{ .module_uri = module_uri, .name = name };
-}
-
-fn deinitClass(allocator: std.mem.Allocator, value: Class) void {
-    if (value.module_uri.len != 0) allocator.free(value.module_uri);
-    if (value.name.len != 0) allocator.free(value.name);
-}
-
-fn deinitTypeAlias(allocator: std.mem.Allocator, value: TypeAlias) void {
+fn deinitNamedEntity(allocator: std.mem.Allocator, value: anytype) void {
     if (value.module_uri.len != 0) allocator.free(value.module_uri);
     if (value.name.len != 0) allocator.free(value.name);
 }

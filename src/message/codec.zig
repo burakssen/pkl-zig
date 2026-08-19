@@ -56,12 +56,7 @@ pub fn encodeFrame(allocator: std.mem.Allocator, code: Code, body: msgpack.Paylo
 pub fn snakeToCamel(comptime input: []const u8) []const u8 {
     if (std.mem.eql(u8, input, "error")) return "error";
     comptime {
-        var count: usize = 0;
-        for (input) |c| {
-            if (c != '_') count += 1;
-        }
-
-        var output: [count]u8 = undefined;
+        var output: [input.len]u8 = undefined;
         var out_idx: usize = 0;
         var capitalize_next = false;
 
@@ -75,7 +70,7 @@ pub fn snakeToCamel(comptime input: []const u8) []const u8 {
             }
         }
 
-        const final = output;
+        const final = output[0..out_idx].*;
         return &final;
     }
 }
@@ -457,6 +452,7 @@ fn isStringHashMap(comptime T: type) bool {
 }
 
 fn stringHashMapValueType(comptime T: type) type {
+    if (@hasDecl(T, "Value")) return T.Value;
     const KV = @field(T, "KV");
     const info = @typeInfo(KV).@"struct";
     inline for (info.fields) |field| {

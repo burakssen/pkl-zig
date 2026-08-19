@@ -31,10 +31,6 @@ pub const Options = struct {
     stderr: std.process.SpawnOptions.StdIo = .inherit,
 };
 
-pub const frame = struct {
-    pub const encodeOutgoing = Transport.encodeOutgoing;
-};
-
 io: std.Io,
 allocator: std.mem.Allocator,
 child: std.process.Child,
