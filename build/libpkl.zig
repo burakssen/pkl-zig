@@ -38,7 +38,7 @@ pub const LibPkl = struct {
     }
 };
 
-pub fn add(b: *std.Build, options: Options) LibPkl {
+pub fn add(b: *std.Build, options: Options) ?LibPkl {
     // If prebuilt paths were explicitly provided, bypass Gradle invocation
     if (options.prebuilt_lib) |lib| {
         return .{
@@ -50,10 +50,11 @@ pub fn add(b: *std.Build, options: Options) LibPkl {
     const target = options.target.result;
     const target_name = getTargetName(target);
 
+    // return null if lazy dependency is not yet fetched so Zig can download it and restart build
     const source_root = options.pkl_source_path orelse if (b.lazyDependency("pkl", .{})) |dep|
         dep.path("")
     else
-        b.dependency("pkl", .{}).path("");
+        return null;
 
     const is_windows = target.os.tag == .windows;
     const ext = if (is_windows) "lib" else "a";
