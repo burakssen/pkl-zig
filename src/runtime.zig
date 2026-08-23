@@ -308,6 +308,11 @@ fn cancelPending(self: *Runtime, request_id: i64, pending: *Pending) void {
 }
 
 fn destroy(self: *Runtime) void {
+    // Complete every outstanding request before the dispatcher disappears so
+    // no request() caller can block forever on a response that can no longer
+    // be routed.
+    self.failRuntime(self.closed_error orelse error.ManagerClosed);
+
     // Cancellation wakes the dispatcher if it is blocked in Transport.recv().
     self.dispatch_group.cancel(self.io);
     self.handler_group.cancel(self.io);
