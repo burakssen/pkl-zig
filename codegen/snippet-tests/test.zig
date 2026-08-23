@@ -41,6 +41,17 @@ fn loadUnionFixture(evaluator: anytype, path: []const u8) !union_pkg.Union {
     };
 }
 
+fn expectInit(result: pkl.Evaluator.InitResult) !pkl.Evaluator {
+    return switch (result) {
+        .evaluator => |evaluator| evaluator,
+        .failed => |failed| {
+            defer failed.deinit(std.testing.allocator);
+            std.debug.print("evaluator creation failed: {s}\n", .{failed.diagnostic});
+            return error.CreateEvaluatorFailed;
+        },
+    };
+}
+
 test "generated snippet packages compile" {
     _ = bugholder.BugHolder;
     _ = cyclicmodule.CyclicModule;
@@ -163,7 +174,7 @@ test "generated class unions decode real pkl values" {
     const path = try runtimeFixturePath(allocator, "UnionValues.pkl");
     defer allocator.free(path);
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     var config = try loadUnionFixture(&evaluator, path);
@@ -190,7 +201,7 @@ test "generated load helpers reuse manager evaluators" {
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
 
-    var evaluator = try manager.newEvaluator(.{});
+    var evaluator = try expectInit(try manager.newEvaluator(.{}));
     defer evaluator.deinit();
 
     var first = try loadUnionFixture(&evaluator, path);
