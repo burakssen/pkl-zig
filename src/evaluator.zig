@@ -221,7 +221,29 @@ local_mutex: std.Io.Mutex = .init,
 closed: bool = false,
 last_error: ?[]u8 = null,
 
-pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !Evaluator {
+/// Result of evaluator creation. When the Pkl server rejects creation there
+/// is no evaluator instance to hold the diagnostic, so it is surfaced here.
+pub const InitResult = union(enum) {
+    evaluator: Evaluator,
+    failed: Failed,
+
+    pub const Failed = struct {
+        diagnostic: []u8,
+
+        /// Frees the diagnostic with the same allocator passed to the
+        /// creation call.
+        pub fn deinit(self: Failed, allocator: std.mem.Allocator) void {
+            allocator.free(self.diagnostic);
+        }
+    };
+};
+
+const CreateOutcome = union(enum) {
+    id: i64,
+    failed: []u8,
+};
+
+pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) !InitResult {
     const runtime = try Runtime.init(io, allocator, .{ .pkl_argv = options.pkl_argv });
     return initWithOwnedRuntime(io, allocator, runtime, options);
 }
@@ -232,7 +254,7 @@ pub fn initPreconfigured(
     io: std.Io,
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
-) !Evaluator {
+) !InitResult {
     var options = try OptionsBuilder.preconfigured(allocator, environ);
     defer options.deinit();
     return init(io, allocator, options.build());
@@ -248,7 +270,7 @@ pub fn initWithTransport(
     transport: *Transport,
     shared_mutex: ?*std.Io.Mutex,
     options: Options,
-) !Evaluator {
+) !InitResult {
     if (shared_mutex != null) return error.SharedTransportRequiresManager;
     const runtime = try Runtime.initWithStartedTransport(io, allocator, transport, false);
     return initWithOwnedRuntime(io, allocator, runtime, options);
@@ -261,7 +283,7 @@ pub fn initWithRuntime(
     allocator: std.mem.Allocator,
     runtime: *Runtime,
     options: Options,
-) !Evaluator {
+) !InitResult {
     return initWithOwnedRuntime(io, allocator, runtime, options);
 }
 
@@ -270,7 +292,7 @@ fn initWithOwnedRuntime(
     allocator: std.mem.Allocator,
     runtime: *Runtime,
     options: Options,
-) !Evaluator {
+) !InitResult {
     var self = Evaluator{
         .io = io,
         .allocator = allocator,
@@ -278,9 +300,19 @@ fn initWithOwnedRuntime(
         .evaluator_id = 0,
     };
     errdefer runtime.release();
-    errdefer self.clearLastErrorUnlocked();
 
-    self.evaluator_id = try self.createUnlocked(options);
+    const outcome = try self.createUnlocked(options);
+    switch (outcome) {
+        .failed => |diagnostic| {
+            // No evaluator materialized, so the diagnostic cannot be attached
+            // to an instance; hand it to the caller instead.
+            self.runtime = null;
+            runtime.release();
+            return .{ .failed = .{ .diagnostic = diagnostic } };
+        },
+        .id => |id| self.evaluator_id = id,
+    }
+
     errdefer runtime.sendAndFlush(.{
         .close_evaluator = .{ .evaluator_id = self.evaluator_id },
     }) catch {};
@@ -290,7 +322,7 @@ fn initWithOwnedRuntime(
         .module_readers = options.module_readers orelse &.{},
         .logger = options.logger,
     });
-    return self;
+    return .{ .evaluator = self };
 }
 
 /// Deinitialization is idempotent with respect to an earlier explicit close().
@@ -446,7 +478,7 @@ pub fn load(self: *Evaluator, comptime T: type, module_uri: []const u8) !T {
     return self.evaluateModule(T, .fromUri(module_uri));
 }
 
-fn createUnlocked(self: *Evaluator, options: Options) !i64 {
+fn createUnlocked(self: *Evaluator, options: Options) !CreateOutcome {
     self.clearLastErrorUnlocked();
     const runtime = self.runtime orelse return error.EvaluatorClosed;
     const request_id = try runtime.nextRequestId();
@@ -505,10 +537,9 @@ fn createUnlocked(self: *Evaluator, options: Options) !i64 {
         .create_evaluator_response => |response| blk: {
             if (response.request_id != request_id) return error.UnexpectedResponseId;
             if (response.@"error") |diagnostic| {
-                try self.setLastErrorUnlocked(diagnostic);
-                return error.CreateEvaluatorFailed;
+                break :blk CreateOutcome{ .failed = try self.allocator.dupe(u8, diagnostic) };
             }
-            break :blk response.evaluator_id orelse error.MissingEvaluatorId;
+            break :blk CreateOutcome{ .id = response.evaluator_id orelse return error.MissingEvaluatorId };
         },
         else => error.UnexpectedMessage,
     };

@@ -2,10 +2,23 @@ const std = @import("std");
 const pkl = @import("pkl");
 const integration_build_options = @import("integration_build_options");
 
+/// Unwraps a creation result, failing the test with the server's diagnostic
+/// when Pkl rejected evaluator creation.
+fn expectInit(result: pkl.Evaluator.InitResult) !pkl.Evaluator {
+    return switch (result) {
+        .evaluator => |evaluator| evaluator,
+        .failed => |failed| {
+            defer failed.deinit(std.testing.allocator);
+            std.debug.print("evaluator creation failed: {s}\n", .{failed.diagnostic});
+            return error.CreateEvaluatorFailed;
+        },
+    };
+}
+
 test "evaluator decodes pkl-binary end to end" {
     const allocator = std.testing.allocator;
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw("pkl:base", "42");
@@ -29,7 +42,7 @@ test "ModuleSource evaluates in-memory Pkl into typed Zig values" {
         answer: i64,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     var config = try evaluator.evaluateModule(Config, pkl.ModuleSource.fromText(
@@ -44,7 +57,7 @@ test "ModuleSource evaluates in-memory Pkl into typed Zig values" {
 
 test "standard output helpers evaluate text bytes value and files" {
     const allocator = std.testing.allocator;
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     var text = try evaluator.evaluateOutputText(pkl.ModuleSource.fromText(
@@ -103,7 +116,7 @@ test "preconfigured evaluator starts with binding defaults" {
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
 
-    var evaluator = try pkl.Evaluator.initPreconfigured(std.testing.io, allocator, &environ);
+    var evaluator = try expectInit(try pkl.Evaluator.initPreconfigured(std.testing.io, allocator, &environ));
     defer evaluator.deinit();
 
     const answer = try evaluator.evaluateExpression(
@@ -114,13 +127,24 @@ test "preconfigured evaluator starts with binding defaults" {
     try std.testing.expectEqual(@as(i64, 42), answer);
 }
 
+test "evaluator creation failure carries the Pkl diagnostic" {
+    const allocator = std.testing.allocator;
+
+    var result = try pkl.Evaluator.init(std.testing.io, allocator, .{
+        .allowed_modules = &.{"["},
+    });
+    try std.testing.expect(result == .failed);
+    defer result.failed.deinit(allocator);
+    try std.testing.expect(result.failed.diagnostic.len != 0);
+}
+
 test "Pkl 0.32 Reference decodes end to end" {
     const allocator = std.testing.allocator;
 
     const path = try fixturePath(allocator, "reference.pkl");
     defer allocator.free(path);
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     const uri = try pkl.Evaluator.fileUriFromPath(std.testing.io, allocator, path);
@@ -161,7 +185,7 @@ test "PklProject resolved evaluator settings apply end to end" {
     try std.testing.expect(std.fs.path.isAbsolute(module_paths[0]));
     try std.testing.expectEqualStrings("modules", std.fs.path.basename(module_paths[0]));
 
-    var evaluator = try project.newEvaluator(std.testing.io, allocator, .{});
+    var evaluator = try expectInit(try project.newEvaluator(std.testing.io, allocator, .{}));
     defer evaluator.deinit();
 
     const module_path = try std.fs.path.join(allocator, &.{ project_dir, "main.pkl" });
@@ -192,10 +216,10 @@ test "in-process custom ResourceReader reads resource" {
         .read = testResourceRead,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .allowed_resources = &.{ "customres:", "pkl:" },
         .resource_readers = &.{resource_reader},
-    });
+    }));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw("pkl:base", "read(\"customres:hello.txt\").text");
@@ -222,10 +246,10 @@ test "in-process custom ModuleReader evaluates module" {
         .read = testModuleRead,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .allowed_modules = &.{ "custommod:", "pkl:", "repl:" },
         .module_readers = &.{module_reader},
-    });
+    }));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw("custommod:config.pkl", "name");
@@ -248,7 +272,7 @@ test "OptionsBuilder automatically permits in-process reader schemes" {
     defer options.deinit();
     try options.addModuleReader(module_reader);
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, options.build());
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, options.build()));
     defer evaluator.deinit();
 
     var name = try evaluator.evaluateExpression(
@@ -291,10 +315,10 @@ test "in-process custom ModuleReader globbing" {
         .list_elements = testGlobModuleList,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .allowed_modules = &.{ "globmod:", "pkl:", "repl:" },
         .module_readers = &.{module_reader},
-    });
+    }));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw("pkl:base", "(import*(\"globmod:/*.pkl\")).length");
@@ -316,10 +340,10 @@ test "in-process custom ResourceReader propagates read error" {
         .read = testFailingRead,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .allowed_resources = &.{ "failres:", "pkl:" },
         .resource_readers = &.{resource_reader},
-    });
+    }));
     defer evaluator.deinit();
 
     const result = evaluator.evaluateExpressionRaw("pkl:base", "read(\"failres:missing.txt\").text");
@@ -334,16 +358,16 @@ test "EvaluatorManager multiplexes multiple evaluators on a single process" {
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
 
-    var eval1 = try manager.newEvaluator(.{});
+    var eval1 = try expectInit(try manager.newEvaluator(.{}));
     defer eval1.deinit();
 
     var props = std.StringHashMap([]const u8).init(allocator);
     defer props.deinit();
     try props.put("greeting", "Hello from eval2");
 
-    var eval2 = try manager.newEvaluator(.{
+    var eval2 = try expectInit(try manager.newEvaluator(.{
         .properties = props,
-    });
+    }));
     defer eval2.deinit();
 
     try std.testing.expect(eval1.evaluator_id != eval2.evaluator_id);
@@ -377,7 +401,7 @@ test "EvaluatorManager multiplexes multiple evaluators on a single process" {
     }
 
     // Spawn a 3rd evaluator on the same manager
-    var eval3 = try manager.newEvaluator(.{});
+    var eval3 = try expectInit(try manager.newEvaluator(.{}));
     defer eval3.deinit();
 
     {
@@ -400,7 +424,7 @@ test "EvaluatorManager evaluates PklProject" {
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
 
-    var evaluator = try manager.newProjectEvaluator(&project, .{});
+    var evaluator = try expectInit(try manager.newProjectEvaluator(&project, .{}));
     defer evaluator.deinit();
 
     const module_path = try std.fs.path.join(allocator, &.{ project_dir, "main.pkl" });
@@ -432,10 +456,10 @@ test "in-process reader allocations are request scoped" {
         .read = allocatingResourceRead,
     };
 
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .allowed_resources = &.{ "ownedres:", "pkl:" },
         .resource_readers = &.{reader},
-    });
+    }));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw(
@@ -453,7 +477,7 @@ test "manager close invalidates retained evaluator safely" {
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
 
-    var evaluator = try manager.newEvaluator(.{});
+    var evaluator = try expectInit(try manager.newEvaluator(.{}));
     defer evaluator.deinit();
 
     manager.close();
@@ -483,12 +507,12 @@ fn captureLog(
 test "evaluator logger receives trace messages" {
     const allocator = std.testing.allocator;
     var capture = LogCapture{};
-    var evaluator = try pkl.Evaluator.init(std.testing.io, allocator, .{
+    var evaluator = try expectInit(try pkl.Evaluator.init(std.testing.io, allocator, .{
         .logger = .{
             .context = &capture,
             .write = captureLog,
         },
-    });
+    }));
     defer evaluator.deinit();
 
     const raw = try evaluator.evaluateExpressionRaw("pkl:base", "trace(40 + 2)");
@@ -537,9 +561,9 @@ test "manager routes concurrent evaluator responses by request id" {
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
 
-    var first = try manager.newEvaluator(.{});
+    var first = try expectInit(try manager.newEvaluator(.{}));
     defer first.deinit();
-    var second = try manager.newEvaluator(.{});
+    var second = try expectInit(try manager.newEvaluator(.{}));
     defer second.deinit();
 
     var first_buffer: [1]AsyncEvaluation = undefined;
@@ -600,14 +624,14 @@ test "manager close lets an already-started reader request drain" {
 
     var manager = try pkl.EvaluatorManager.init(std.testing.io, allocator, .{});
     defer manager.deinit();
-    var evaluator = try manager.newEvaluator(.{
+    var evaluator = try expectInit(try manager.newEvaluator(.{
         .allowed_modules = &.{ "blocking:", "pkl:", "repl:" },
         .module_readers = &.{.{
             .scheme = "blocking",
             .read = blockingModuleRead,
             .context = &state,
         }},
-    });
+    }));
     defer evaluator.deinit();
 
     var group: std.Io.Group = .init;
