@@ -23,7 +23,7 @@ pub const ModuleReader = struct {
 
 /// Checksums for a remote project dependency.
 pub const Checksums = struct {
-    sha256: []const u8,
+    sha256: ?[]const u8 = null,
 };
 
 /// Local project settings passed to the evaluator.
