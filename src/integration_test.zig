@@ -597,20 +597,24 @@ fn blockingModuleRead(
     return "answer = 42";
 }
 
-fn evaluateBlockingModule(
-    evaluator: *pkl.Evaluator,
-    results: *std.Io.Queue(AsyncEvaluation),
-) void {
-    const result = evaluator.evaluateExpression(
-        i64,
-        pkl.ModuleSource.fromUri("blocking:config.pkl"),
-        "answer",
-    ) catch |err| {
-        results.putOne(std.testing.io, .{ .failure = err }) catch {};
-        return;
-    };
-    results.putOne(std.testing.io, .{ .value = result }) catch {};
-}
+/// Runs the evaluation on a dedicated OS thread. `Io.Threaded` executes async
+/// work inline on the calling thread once `busy_count` reaches
+/// `async_limit` (cpu_count - 1 by default; 1 on 2-vCPU CI runners), which
+/// would deadlock this test: the inline task blocks on a queue only the main
+/// thread can advance. A real thread cannot be stolen that way.
+const DrainDriver = struct {
+    fn run(evaluator: *pkl.Evaluator, results: *std.Io.Queue(AsyncEvaluation)) void {
+        const result = evaluator.evaluateExpression(
+            i64,
+            pkl.ModuleSource.fromUri("blocking:config.pkl"),
+            "answer",
+        ) catch |err| {
+            results.putOne(std.testing.io, .{ .failure = err }) catch {};
+            return;
+        };
+        results.putOne(std.testing.io, .{ .value = result }) catch {};
+    }
+};
 
 test "manager close lets an already-started reader request drain" {
     const allocator = std.testing.allocator;
@@ -634,9 +638,9 @@ test "manager close lets an already-started reader request drain" {
     }));
     defer evaluator.deinit();
 
-    var group: std.Io.Group = .init;
-    defer group.cancel(std.testing.io);
-    group.async(std.testing.io, evaluateBlockingModule, .{ &evaluator, &results });
+    // Runs the evaluation on a dedicated OS thread; see DrainDriver.
+    const driver = try std.Thread.spawn(.{}, DrainDriver.run, .{ &evaluator, &results });
+    defer driver.join();
 
     try std.testing.expect(try entered.getOne(std.testing.io));
     manager.close();
