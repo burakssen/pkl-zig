@@ -250,7 +250,7 @@ fn headerValues(allocator: std.mem.Allocator, source: value.Value) ![]const []co
             values[0] = string;
             break :blk values;
         },
-        .list => |items| blk: {
+        .list, .listing, .set => |items| blk: {
             const values = try allocator.alloc([]const u8, items.len);
             for (items, 0..) |item, index| {
                 values[index] = switch (item) {
