@@ -92,7 +92,12 @@ pub fn deinit(self: *ProcessTransport) void {
     if (was_started) {
         log.info("Canceling transport task group.", .{});
         self.group.cancel(self.io);
-    } else if (self.child.stdin) |stdin_value| {
+    }
+
+    // The pkl server exits only after its stdin reaches EOF. Closing it here
+    // deterministically (instead of relying solely on the write task's defer)
+    // guarantees `wait` below cannot block forever on a live server.
+    if (self.child.stdin) |stdin_value| {
         var stdin = stdin_value;
         stdin.close(self.io);
         self.child.stdin = null;

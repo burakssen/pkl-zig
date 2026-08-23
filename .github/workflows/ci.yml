@@ -26,6 +26,8 @@ jobs:
         run: zig fmt --check build.zig build/libpkl.zig src example
 
   libpkl:
+    # A cold Gradle build of libpkl is slow; cached runs finish in seconds.
+    timeout-minutes: 20
     name: Native libpkl
     runs-on: ubuntu-latest
 
