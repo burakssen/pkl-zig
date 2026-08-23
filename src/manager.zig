@@ -55,7 +55,7 @@ pub const EvaluatorManager = struct {
         runtime.release();
     }
 
-    pub fn newEvaluator(self: *EvaluatorManager, options: Evaluator.Options) !Evaluator {
+    pub fn newEvaluator(self: *EvaluatorManager, options: Evaluator.Options) !Evaluator.InitResult {
         try self.mutex.lock(self.io);
         const runtime = self.runtime orelse {
             self.mutex.unlock(self.io);
@@ -77,7 +77,7 @@ pub const EvaluatorManager = struct {
     pub fn newPreconfiguredEvaluator(
         self: *EvaluatorManager,
         environ: *const std.process.Environ.Map,
-    ) !Evaluator {
+    ) !Evaluator.InitResult {
         var options = try Evaluator.OptionsBuilder.preconfigured(self.allocator, environ);
         defer options.deinit();
         return self.newEvaluator(options.build());
@@ -87,7 +87,7 @@ pub const EvaluatorManager = struct {
         self: *EvaluatorManager,
         project: *const Project,
         base: Evaluator.Options,
-    ) !Evaluator {
+    ) !Evaluator.InitResult {
         return project.newEvaluatorWithManager(self, base);
     }
 };
