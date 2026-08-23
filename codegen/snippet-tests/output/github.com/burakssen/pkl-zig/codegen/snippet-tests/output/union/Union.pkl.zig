@@ -37,7 +37,10 @@ pub const Union = struct {
     };
 
     pub fn loadFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !@This() {
-        var evaluator = try pkl.Evaluator.init(io, allocator, .{});
+        var evaluator = switch (try pkl.Evaluator.init(io, allocator, .{})) {
+            .evaluator => |evaluator| evaluator,
+            .failed => return error.CreateEvaluatorFailed,
+        };
         defer evaluator.deinit();
         return evaluator.loadFromPath(@This(), path);
     }
