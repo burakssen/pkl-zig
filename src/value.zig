@@ -255,8 +255,16 @@ pub const Value = union(enum) {
     float: f64,
     string: []const u8,
     bytes: []const u8,
+    /// A bare msgpack array or Pkl List.
     list: []Value,
+    /// A Pkl Listing: an ordered, append-only collection.
+    listing: []Value,
+    /// A Pkl Set: a collection of unique elements.
+    set: []Value,
+    /// A bare msgpack map or Pkl Map.
     map: []Entry,
+    /// A Pkl Mapping: an object-like key/value container.
+    mapping: []Entry,
     object: Object,
     pair: Pair(*Value, *Value),
     duration: Duration,
@@ -270,11 +278,11 @@ pub const Value = union(enum) {
 
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .list => |items| {
+            .list, .listing, .set => |items| {
                 for (items) |*item| item.deinit(allocator);
                 if (items.len != 0) allocator.free(items);
             },
-            .map => |entries| {
+            .map, .mapping => |entries| {
                 for (entries) |*entry| entry.deinit(allocator);
                 if (entries.len != 0) allocator.free(entries);
             },
@@ -308,7 +316,10 @@ pub const Value = union(enum) {
             .string => |value| .{ .string = try cloneBytes(allocator, value) },
             .bytes => |value| .{ .bytes = try cloneBytes(allocator, value) },
             .list => |items| .{ .list = try cloneValues(allocator, items) },
+            .listing => |items| .{ .listing = try cloneValues(allocator, items) },
+            .set => |items| .{ .set = try cloneValues(allocator, items) },
             .map => |entries| .{ .map = try cloneEntries(allocator, entries) },
+            .mapping => |entries| .{ .mapping = try cloneEntries(allocator, entries) },
             .object => |object| .{ .object = try object.clone(allocator) },
             .pair => |pair| .{ .pair = try clonePair(allocator, pair) },
             .duration => |value| .{ .duration = value },
@@ -551,7 +562,7 @@ fn decodeSlice(
     value: Value,
 ) DecodeError!T {
     const values = switch (value) {
-        .list => |items| items,
+        .list, .listing, .set => |items| items,
         else => return DecodeError.UnsupportedType,
     };
 
@@ -608,7 +619,7 @@ fn decodeStruct(comptime T: type, allocator: std.mem.Allocator, value: Value) De
 
 fn decodeHashMap(comptime T: type, allocator: std.mem.Allocator, value: Value) DecodeError!T {
     const entries = switch (value) {
-        .map => |entries| entries,
+        .map, .mapping => |entries| entries,
         else => return DecodeError.UnsupportedType,
     };
 
@@ -692,11 +703,13 @@ fn fromArrayPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) Deco
 
     const code_payload = try payload.getArrElement(0);
     const code = code_payload.getInt() catch return decodePlainArray(allocator, payload, len);
-
     return switch (code) {
         code_object => decodeObject(allocator, payload, len),
-        code_map, code_mapping => decodeMapWrapper(allocator, payload, len),
-        code_list, code_listing, code_set => decodeListWrapper(allocator, payload, len),
+        code_map => decodeMapWrapper(allocator, payload, len, .map),
+        code_mapping => decodeMapWrapper(allocator, payload, len, .mapping),
+        code_list => decodeListWrapper(allocator, payload, len, .list),
+        code_listing => decodeListWrapper(allocator, payload, len, .listing),
+        code_set => decodeListWrapper(allocator, payload, len, .set),
         code_duration => decodeDuration(payload, len),
         code_data_size => decodeDataSize(payload, len),
         code_pair => decodePair(allocator, payload, len),
@@ -719,26 +732,28 @@ fn decodePlainArray(
     payload: msgpack.Payload,
     len: usize,
 ) DecodeError!Value {
-    return decodeListPayload(allocator, payload, len);
+    return decodeListPayload(allocator, payload, len, .list);
 }
 
 fn decodeListWrapper(
     allocator: std.mem.Allocator,
     payload: msgpack.Payload,
     len: usize,
+    comptime tag: std.meta.Tag(Value),
 ) DecodeError!Value {
     if (len < 2) return DecodeError.InvalidPklValue;
     const items_payload = try payload.getArrElement(1);
     const item_count = try items_payload.getArrLen();
-    return decodeListPayload(allocator, items_payload, item_count);
+    return decodeListPayload(allocator, items_payload, item_count, tag);
 }
 
 fn decodeListPayload(
     allocator: std.mem.Allocator,
     payload: msgpack.Payload,
     len: usize,
+    comptime tag: std.meta.Tag(Value),
 ) DecodeError!Value {
-    if (len == 0) return .{ .list = &.{} };
+    if (len == 0) return @unionInit(Value, @tagName(tag), &.{});
 
     const items = try allocator.alloc(Value, len);
     var initialized: usize = 0;
@@ -751,16 +766,17 @@ fn decodeListPayload(
         item.* = try fromPayload(allocator, try payload.getArrElement(index));
         initialized += 1;
     }
-    return .{ .list = items };
+    return @unionInit(Value, @tagName(tag), items);
 }
 
 fn decodeMapWrapper(
     allocator: std.mem.Allocator,
     payload: msgpack.Payload,
     len: usize,
+    comptime tag: std.meta.Tag(Value),
 ) DecodeError!Value {
     if (len < 2) return DecodeError.InvalidPklValue;
-    return fromMapPayload(allocator, try payload.getArrElement(1));
+    return fromMapPayloadTagged(allocator, try payload.getArrElement(1), tag);
 }
 
 fn decodeDuration(payload: msgpack.Payload, len: usize) DecodeError!Value {
@@ -872,11 +888,22 @@ fn decodeReference(
     } };
 }
 
-fn fromMapPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) DecodeError!Value {
+fn fromMapPayload(
+    allocator: std.mem.Allocator,
+    payload: msgpack.Payload,
+) DecodeError!Value {
+    return fromMapPayloadTagged(allocator, payload, .map);
+}
+
+fn fromMapPayloadTagged(
+    allocator: std.mem.Allocator,
+    payload: msgpack.Payload,
+    comptime tag: std.meta.Tag(Value),
+) DecodeError!Value {
     if (payload != .map) return DecodeError.UnsupportedType;
 
     const count = payload.map.map.count();
-    if (count == 0) return .{ .map = &.{} };
+    if (count == 0) return @unionInit(Value, @tagName(tag), &.{});
 
     const entries = try allocator.alloc(Entry, count);
     var initialized: usize = 0;
@@ -897,7 +924,7 @@ fn fromMapPayload(allocator: std.mem.Allocator, payload: msgpack.Payload) Decode
         initialized += 1;
     }
 
-    return .{ .map = entries };
+    return @unionInit(Value, @tagName(tag), entries);
 }
 
 fn decodeObject(
@@ -1260,6 +1287,72 @@ test "decode pkl map wrapper payload" {
     try std.testing.expectEqual(@as(usize, 1), value.map.len);
     try std.testing.expectEqualStrings("city", value.map[0].key.string);
     try std.testing.expectEqualStrings("London", value.map[0].value.string);
+}
+
+test "collection wrappers keep their Pkl identity" {
+    const allocator = std.testing.allocator;
+
+    const cases = [_]struct { code: u8, tag: std.meta.Tag(Value) }{
+        .{ .code = code_list, .tag = .list },
+        .{ .code = code_listing, .tag = .listing },
+        .{ .code = code_set, .tag = .set },
+    };
+    for (cases) |case| {
+        var items = try msgpack.Payload.arrPayload(1, allocator);
+        try items.setArrElement(0, msgpack.Payload.intToPayload(42));
+
+        var payload = try msgpack.Payload.arrPayload(2, allocator);
+        defer payload.free(allocator);
+        try payload.setArrElement(0, msgpack.Payload.intToPayload(case.code));
+        try payload.setArrElement(1, items);
+
+        var decoded = try fromPayload(allocator, payload);
+        defer decoded.deinit(allocator);
+
+        try std.testing.expect(decoded == case.tag);
+        // Typed decoding still accepts every sequence kind.
+        const typed = try fromValue([]const i64, allocator, decoded);
+        defer deinitDecoded([]const i64, allocator, &typed);
+        try std.testing.expectEqual(@as(usize, 1), typed.len);
+        try std.testing.expectEqual(@as(i64, 42), typed[0]);
+    }
+
+    const map_cases = [_]struct { code: u8, tag: std.meta.Tag(Value) }{
+        .{ .code = code_map, .tag = .map },
+        .{ .code = code_mapping, .tag = .mapping },
+    };
+    for (map_cases) |case| {
+        var entries_payload = msgpack.Payload.mapPayload(allocator);
+        try entries_payload.mapPut("city", try msgpack.Payload.strToPayload("London", allocator));
+
+        var payload = try msgpack.Payload.arrPayload(2, allocator);
+        defer payload.free(allocator);
+        try payload.setArrElement(0, msgpack.Payload.intToPayload(case.code));
+        try payload.setArrElement(1, entries_payload);
+
+        var decoded = try fromPayload(allocator, payload);
+        defer decoded.deinit(allocator);
+
+        try std.testing.expect(decoded == case.tag);
+        // Typed decoding still accepts both mapping kinds.
+        var typed = try fromValue(std.StringHashMap([]const u8), allocator, decoded);
+        defer deinitDecoded(std.StringHashMap([]const u8), allocator, &typed);
+        try std.testing.expectEqualStrings("London", typed.get("city").?);
+    }
+}
+
+test "clone preserves collection identity" {
+    const allocator = std.testing.allocator;
+
+    const listing: Value = .{ .listing = @constCast(&.{.{ .int = 1 }}) };
+    const cloned = try listing.clone(allocator);
+    defer cloned.deinit(allocator);
+    try std.testing.expect(cloned == .listing);
+
+    const mapping: Value = .{ .mapping = @constCast(&.{}) };
+    const cloned_mapping = try mapping.clone(allocator);
+    defer cloned_mapping.deinit(allocator);
+    try std.testing.expect(cloned_mapping == .mapping);
 }
 
 test "decode function marker without silently treating it as a list" {
