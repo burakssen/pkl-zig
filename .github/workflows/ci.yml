@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   format:
+    timeout-minutes: 5
     name: Format
     runs-on: ubuntu-latest
 
@@ -25,6 +26,7 @@ jobs:
         run: zig fmt --check build.zig src example
 
   unit:
+    timeout-minutes: 5
     name: Unit
     runs-on: ubuntu-latest
 
@@ -41,6 +43,7 @@ jobs:
         run: zig build test
 
   integration:
+    timeout-minutes: 5
     name: Integration
     runs-on: ubuntu-latest
 
@@ -65,6 +68,7 @@ jobs:
       - name: Run integration tests
         run: zig build integration-test
   codegen:
+    timeout-minutes: 5
     name: Codegen
     runs-on: ubuntu-latest
 
