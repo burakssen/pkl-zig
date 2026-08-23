@@ -595,6 +595,8 @@ fn decodeStruct(comptime T: type, allocator: std.mem.Allocator, value: Value) De
             @field(result, field.name) = try fromValue(field.type, allocator, property);
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
+        } else if (comptime field.defaultValue()) |default| {
+            @field(result, field.name) = default;
         } else {
             return DecodeError.MissingField;
         }
@@ -1139,6 +1141,56 @@ test "typed struct cleanup is transactional" {
     };
 
     try std.testing.expectError(DecodeError.MissingField, fromValue(Bird, allocator, value));
+}
+
+test "missing fields fall back to Zig default values" {
+    const allocator = std.testing.allocator;
+
+    var properties = std.StringHashMap(Value).init(allocator);
+    defer properties.deinit();
+    try properties.put("host", .{ .string = "pkl.dev" });
+
+    const value: Value = .{ .object = .{
+        .module_uri = "",
+        .name = "",
+        .properties = properties,
+        .entries = &.{},
+        .elements = &.{},
+    } };
+
+    const Config = struct {
+        host: []const u8 = "localhost",
+        port: i64 = 8080,
+    };
+
+    // Absent fields use their defaults; present fields override them.
+    var config = try fromValue(Config, allocator, value);
+    defer deinitDecoded(Config, allocator, &config);
+    try std.testing.expectEqualStrings("pkl.dev", config.host);
+    try std.testing.expectEqual(@as(i64, 8080), config.port);
+
+    var empty_properties = std.StringHashMap(Value).init(allocator);
+    defer empty_properties.deinit();
+
+    const fallback: Value = .{ .object = .{
+        .module_uri = "",
+        .name = "",
+        .properties = empty_properties,
+        .entries = &.{},
+        .elements = &.{},
+    } };
+
+    config = try fromValue(Config, allocator, fallback);
+    defer deinitDecoded(Config, allocator, &config);
+    try std.testing.expectEqualStrings("localhost", config.host);
+    try std.testing.expectEqual(@as(i64, 8080), config.port);
+
+    // Fields without a default still reject absence.
+    const Strict = struct {
+        name: []const u8,
+        port: i64 = 1,
+    };
+    try std.testing.expectError(DecodeError.MissingField, fromValue(Strict, allocator, fallback));
 }
 
 test "typed HashMap cleanup is transactional" {
