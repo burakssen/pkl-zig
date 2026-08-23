@@ -75,6 +75,12 @@ pub fn build(b: *std.Build) void {
 
     // Integration tests
     const integration_step = b.step("integration-test", "Run tests that spawn pkl server");
+    // Compiles and installs the test executables without running them, so CI
+    // can execute them directly and capture per-test progress output.
+    const integration_install_step = b.step(
+        "integration-install",
+        "Install the integration test executables",
+    );
     const integration_modules = createModules(b, target, optimize, msgpack_mod, true);
 
     const integration_fixture_options = b.addOptions();
@@ -84,7 +90,10 @@ pub fn build(b: *std.Build) void {
         b.pathFromRoot("src/integration-fixtures"),
     );
 
-    const integration_message_test = b.addTest(.{ .root_module = integration_modules.message });
+    const integration_message_test = b.addTest(.{
+        .name = "pkl-message-tests",
+        .root_module = integration_modules.message,
+    });
     const integration_message_cmd = b.addRunArtifact(integration_message_test);
     integration_step.dependOn(&integration_message_cmd.step);
 
@@ -100,9 +109,15 @@ pub fn build(b: *std.Build) void {
         "integration_build_options",
         integration_fixture_options,
     );
-    const integration_evaluator_test = b.addTest(.{ .root_module = integration_evaluator_mod });
+    const integration_evaluator_test = b.addTest(.{
+        .name = "pkl-integration-tests",
+        .root_module = integration_evaluator_mod,
+    });
     const integration_evaluator_cmd = b.addRunArtifact(integration_evaluator_test);
     integration_step.dependOn(&integration_evaluator_cmd.step);
+
+    integration_install_step.dependOn(&b.addInstallArtifact(integration_message_test, .{}).step);
+    integration_install_step.dependOn(&b.addInstallArtifact(integration_evaluator_test, .{}).step);
 
     // Codegen snippet tests
     const snippet_step = b.step("codegen-snippet-test", "Generate and compile codegen snippet fixtures");

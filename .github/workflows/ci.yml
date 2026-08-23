@@ -65,8 +65,13 @@ jobs:
           sudo mv pkl /usr/local/bin/pkl
           pkl --version
 
+      - name: Build integration tests
+        run: zig build integration-install
+
       - name: Run integration tests
-        run: zig build integration-test
+        run: |
+          ./zig-out/bin/pkl-message-tests
+          ./zig-out/bin/pkl-integration-tests
   codegen:
     timeout-minutes: 5
     name: Codegen
