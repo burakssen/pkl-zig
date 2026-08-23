@@ -80,7 +80,14 @@ const std = @import("std");
 const pkl = @import("pkl");
 
 pub fn main(init: std.process.Init) !void {
-    var evaluator = try pkl.Evaluator.init(init.io, init.gpa, .{});
+    var evaluator = switch (try pkl.Evaluator.init(init.io, init.gpa, .{})) {
+        .evaluator => |evaluator| evaluator,
+        // Pkl rejected creation; the diagnostic travels with the result.
+        .failed => |failed| blk: {
+            defer failed.deinit(init.gpa);
+            break :blk return error.CreateEvaluator;
+        },
+    };
     defer evaluator.deinit();
 
     const config = try evaluator.loadFromPath(MyConfig, "config.pkl");
@@ -118,17 +125,25 @@ defer files.deinit();
 `evaluateOutputBytes` and `evaluateOutputFilesBytes` preserve binary output,
 and `evaluateOutputValue(T, source)` decodes `output.value` directly into `T`.
 
+Creation is fallible: when Pkl rejects an evaluator (for example an invalid
+allow-list pattern), `Evaluator.init`, `initPreconfigured`,
+`Manager.newEvaluator`, and the project helpers return
+`Evaluator.InitResult.failed`, which owns the diagnostic Pkl produced.
+
 Use `Evaluator.Options` when the `pkl` executable is not on `PATH`, module or
 resource permissions need to be restricted, or extra module search paths are
 needed:
 
 ```zig
-var evaluator = try pkl.Evaluator.init(init.io, allocator, .{
+var evaluator = switch (try pkl.Evaluator.init(init.io, allocator, .{
     .pkl_argv = &.{ "/usr/local/bin/pkl", "server" },
     .allowed_modules = &.{ "pkl:", "file:" },
     .allowed_resources = &.{ "file:" },
     .module_paths = &.{ "config" },
-});
+})) {
+    .evaluator => |evaluator| evaluator,
+    .failed => return error.CreateEvaluator,
+};
 ```
 
 For normal application defaults, pass Zig 0.16's explicit process environment
@@ -138,11 +153,14 @@ from `std.process.Init`. `Evaluator.initPreconfigured` forwards it to Pkl, uses
 
 ```zig
 pub fn main(init: std.process.Init) !void {
-    var evaluator = try pkl.Evaluator.initPreconfigured(
+    var evaluator = switch (try pkl.Evaluator.initPreconfigured(
         init.io,
         init.gpa,
         init.environ_map,
-    );
+    )) {
+        .evaluator => |evaluator| evaluator,
+        .failed => return error.CreateEvaluator,
+    };
     defer evaluator.deinit();
 }
 ```
@@ -157,7 +175,10 @@ var options = try pkl.EvaluatorOptionsBuilder.init(allocator, .{});
 defer options.deinit();
 try options.addModuleReader(module_reader);
 
-var evaluator = try pkl.Evaluator.init(init.io, allocator, options.build());
+var evaluator = switch (try pkl.Evaluator.init(init.io, allocator, options.build())) {
+    .evaluator => |evaluator| evaluator,
+    .failed => return error.CreateEvaluator,
+};
 defer evaluator.deinit();
 ```
 
@@ -174,9 +195,15 @@ calls on a single evaluator remain serialized.
 var manager = try pkl.EvaluatorManager.init(init.io, allocator, .{});
 defer manager.deinit();
 
-var first = try manager.newEvaluator(.{});
+var first = switch (try manager.newEvaluator(.{})) {
+    .evaluator => |evaluator| evaluator,
+    .failed => return error.CreateEvaluator,
+};
 defer first.deinit();
-var second = try manager.newEvaluator(.{});
+var second = switch (try manager.newEvaluator(.{})) {
+    .evaluator => |evaluator| evaluator,
+    .failed => return error.CreateEvaluator,
+};
 defer second.deinit();
 ```
 

@@ -33,7 +33,15 @@ pub const Project = struct {
         path: []const u8,
         options: Evaluator.Options,
     ) !Project {
-        var evaluator = try Evaluator.init(io, allocator, options);
+        var evaluator = switch (try Evaluator.init(io, allocator, options)) {
+            .evaluator => |evaluator| evaluator,
+            // load() keeps its plain error surface; use Evaluator.init
+            // directly to receive the server's diagnostic.
+            .failed => |failed| {
+                failed.deinit(allocator);
+                return error.CreateEvaluatorFailed;
+            },
+        };
         defer evaluator.deinit();
 
         if (std.mem.eql(u8, std.fs.path.basename(path), "PklProject")) {
@@ -52,7 +60,7 @@ pub const Project = struct {
         io: std.Io,
         allocator: std.mem.Allocator,
         base: Evaluator.Options,
-    ) !Evaluator {
+    ) !Evaluator.InitResult {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
@@ -72,7 +80,7 @@ pub const Project = struct {
         self: *const Project,
         manager: anytype,
         base: Evaluator.Options,
-    ) !Evaluator {
+    ) !Evaluator.InitResult {
         var arena = std.heap.ArenaAllocator.init(manager.allocator);
         defer arena.deinit();
 
