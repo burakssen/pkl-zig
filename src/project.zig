@@ -1,6 +1,8 @@
 const std = @import("std");
 
 const message = @import("message");
+const codec = message.codec;
+const Code = message.Code;
 const outgoing = message.outgoing;
 const Evaluator = @import("evaluator.zig");
 const value = @import("value.zig");
@@ -58,7 +60,7 @@ pub const Project = struct {
         try applyResolvedSettings(arena.allocator(), &self.resolved_evaluator_settings, &options);
 
         const wire_project = try arena.allocator().create(outgoing.Project);
-        wire_project.* = try buildWireProject(arena.allocator(), self);
+        wire_project.* = try buildWireProject(arena.allocator(), self, true);
         options.project = wire_project;
 
         // Evaluator.init serializes CreateEvaluator before it returns.
@@ -78,7 +80,7 @@ pub const Project = struct {
         try applyResolvedSettings(arena.allocator(), &self.resolved_evaluator_settings, &options);
 
         const wire_project = try arena.allocator().create(outgoing.Project);
-        wire_project.* = try buildWireProject(arena.allocator(), self);
+        wire_project.* = try buildWireProject(arena.allocator(), self, true);
         options.project = wire_project;
 
         return manager.newEvaluator(options);
@@ -90,7 +92,7 @@ pub const Package = struct {
 };
 
 pub const Checksums = struct {
-    sha256: []const u8,
+    sha256: ?[]const u8 = null,
 };
 
 pub const RemoteDependency = struct {
@@ -276,7 +278,15 @@ fn buildExternalReaders(
     return result;
 }
 
-fn buildWireProject(allocator: std.mem.Allocator, project: *const Project) !outgoing.Project {
+/// Builds the CreateEvaluator wire representation. The root project is
+/// encoded with `type = "project"` and no package URI, matching the reference
+/// bindings; nested local dependencies keep `type = "local"` plus their
+/// package URI, and remote dependencies stay `"remote"`.
+fn buildWireProject(
+    allocator: std.mem.Allocator,
+    project: *const Project,
+    is_root: bool,
+) !outgoing.Project {
     var dependencies = std.StringHashMap(*outgoing.ProjectOrDependency).init(allocator);
     var iterator = project.dependencies.iterator();
 
@@ -289,7 +299,7 @@ fn buildWireProject(allocator: std.mem.Allocator, project: *const Project) !outg
 
         if (object.properties.contains("projectFileUri")) {
             var local = try value.fromValue(Project, allocator, entry.value_ptr.*);
-            dependency.* = .{ .project = try buildWireProject(allocator, &local) };
+            dependency.* = .{ .project = try buildWireProject(allocator, &local, false) };
         } else {
             const remote = try value.fromValue(RemoteDependency, allocator, entry.value_ptr.*);
             const checksums: ?*outgoing.Checksums = if (remote.checksums) |checksum| blk: {
@@ -306,11 +316,114 @@ fn buildWireProject(allocator: std.mem.Allocator, project: *const Project) !outg
         try dependencies.put(entry.key_ptr.*, dependency);
     }
 
+    // The reference bindings send no packageUri for the root project, even
+    // when the PklProject declares one.
+    const package_uri: ?[]const u8 = if (is_root) null else if (project.package) |package| package.uri else null;
     return .{
-        .package_uri = if (project.package) |package| package.uri else null,
+        .type = if (is_root) "project" else "local",
+        .package_uri = package_uri,
         .project_file_uri = project.project_file_uri,
         .dependencies = dependencies,
     };
+}
+
+fn dependencyObject(properties: std.StringHashMap(value.Value)) value.Value {
+    // module_uri, name, entries, and elements are unused by buildWireProject.
+    return .{ .object = .{
+        .module_uri = "",
+        .name = "",
+        .properties = properties,
+        .entries = &.{},
+        .elements = &.{},
+    } };
+}
+
+test "wire project uses root and dependency discriminators per protocol" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var local_properties = std.StringHashMap(value.Value).init(arena_allocator);
+    try local_properties.put("projectFileUri", .{ .string = "/deps/local/PklProject" });
+    try local_properties.put("uri", .{ .string = "pkg:local-dep" });
+    try local_properties.put("dependencies", .{ .map = &.{} });
+
+    var checksums_properties = std.StringHashMap(value.Value).init(arena_allocator);
+    try checksums_properties.put("sha256", .{ .string = "abc123" });
+    var remote_properties = std.StringHashMap(value.Value).init(arena_allocator);
+    try remote_properties.put("uri", .{ .string = "pkg:remote-dep" });
+    try remote_properties.put("checksums", try dependencyObject(checksums_properties));
+
+    var dependencies = std.StringHashMap(value.Value).init(arena_allocator);
+    try dependencies.put("localDep", try dependencyObject(local_properties));
+    try dependencies.put("remoteDep", try dependencyObject(remote_properties));
+
+    const project = Project{
+        .package = .{ .uri = "app://root-pkg" },
+        .evaluator_settings = undefined,
+        .resolved_evaluator_settings = undefined,
+        .project_file_uri = "/app/PklProject",
+        .dependencies = dependencies,
+    };
+
+    var wire_root = try buildWireProject(arena_allocator, &project, true);
+
+    // The root is a "project" without a packageUri; its package declaration
+    // must not leak into CreateEvaluator.
+    try std.testing.expectEqualStrings("project", wire_root.type);
+    try std.testing.expectEqual(@as(?[]const u8, null), wire_root.package_uri);
+
+    const wire_local = wire_root.dependencies.get("localDep").?.project;
+    try std.testing.expectEqualStrings("local", wire_local.type);
+    try std.testing.expectEqualStrings("pkg:local-dep", wire_local.package_uri.?);
+    try std.testing.expectEqualStrings("/deps/local/PklProject", wire_local.project_file_uri);
+
+    const wire_remote = wire_root.dependencies.get("remoteDep").?.remote_dependency;
+    try std.testing.expectEqualStrings("remote", wire_remote.type);
+    try std.testing.expectEqualStrings("pkg:remote-dep", wire_remote.package_uri.?);
+    try std.testing.expectEqualStrings("abc123", wire_remote.checksums.?.sha256.?);
+
+    // Golden MessagePack shape of the outgoing CreateEvaluator frame body:
+    // camelCase keys, nil optionals omitted, flat dependency discriminators.
+    var payload = try (message.Outgoing{
+        .create_evaluator = .{ .request_id = 1, .project = &wire_root },
+    }).encode(arena_allocator);
+    defer payload.free(arena_allocator);
+
+    var frame = try codec.decodeFrame(&payload);
+    try std.testing.expectEqual(Code.new_evaluator, frame.code);
+
+    const project_payload = (try frame.body.mapGet("project")) orelse return error.MissingProject;
+    const root_type = try ((try project_payload.mapGet("type")) orelse return error.MissingType).asStr();
+    try std.testing.expectEqualStrings("project", root_type);
+    try std.testing.expect((try project_payload.mapGet("packageUri")) == null);
+    try std.testing.expectEqualStrings(
+        "/app/PklProject",
+        try ((try project_payload.mapGet("projectFileUri")) orelse return error.MissingProjectFileUri).asStr(),
+    );
+
+    const deps_payload = (try project_payload.mapGet("dependencies")) orelse return error.MissingDependencies;
+    const local_payload = (try deps_payload.mapGet("localDep")) orelse return error.MissingLocalDep;
+    try std.testing.expectEqualStrings(
+        "local",
+        try ((try local_payload.mapGet("type")) orelse return error.MissingType).asStr(),
+    );
+    try std.testing.expectEqualStrings(
+        "pkg:local-dep",
+        try ((try local_payload.mapGet("packageUri")) orelse return error.MissingPackageUri).asStr(),
+    );
+
+    const remote_payload = (try deps_payload.mapGet("remoteDep")) orelse return error.MissingRemoteDep;
+    try std.testing.expectEqualStrings(
+        "remote",
+        try ((try remote_payload.mapGet("type")) orelse return error.MissingType).asStr(),
+    );
+    const checksums_payload = (try remote_payload.mapGet("checksums")) orelse return error.MissingChecksums;
+    try std.testing.expectEqualStrings(
+        "abc123",
+        try ((try checksums_payload.mapGet("sha256")) orelse return error.MissingSha256).asStr(),
+    );
 }
 
 test "timeout conversion rounds fractional durations upward" {
