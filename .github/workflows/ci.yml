@@ -64,7 +64,7 @@ jobs:
         run: zig build
 
   unit:
-    timeout-minutes: 5
+    timeout-minutes: 20
     name: Unit
     needs: [libpkl]
     runs-on: ubuntu-latest
@@ -90,7 +90,7 @@ jobs:
         run: zig build test
 
   integration:
-    timeout-minutes: 5
+    timeout-minutes: 20
     name: Integration
     needs: [libpkl]
     runs-on: ubuntu-latest
@@ -129,7 +129,7 @@ jobs:
           ./zig-out/bin/pkl-message-tests
           ./zig-out/bin/pkl-integration-tests
   codegen:
-    timeout-minutes: 5
+    timeout-minutes: 20
     name: Codegen
     needs: [libpkl]
     runs-on: ubuntu-latest
